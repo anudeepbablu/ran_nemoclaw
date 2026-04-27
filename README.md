@@ -21,7 +21,43 @@ The first audience is platform and security leadership. The UI makes the safety 
 | 4 | `codex/visual-dashboards` | Live monitor, RAN impact, Policy Engine, OpenShell, RAG, audit views |
 | 5 | `codex/tests-demo-readiness` | Simulator tests, UI checks, demo runbook |
 
-## Local Development
+## Docker Development
+
+All development and validation should run in the local Docker runtime. On macOS this repo uses the Docker CLI with Colima.
+
+One-time local runtime setup:
+
+```bash
+brew install docker colima
+colima start --cpu 4 --memory 8 --disk 40
+docker version
+```
+
+Build the development image:
+
+```bash
+sh scripts/docker-build.sh
+```
+
+Run the app in a container:
+
+```bash
+sh scripts/docker-dev.sh
+```
+
+Then open:
+
+```text
+http://localhost:5173
+```
+
+Run tests and production build in a container:
+
+```bash
+sh scripts/docker-test.sh
+```
+
+## Sandbox Development
 
 Run these commands from inside the Brev/NemoClaw sandbox:
 
@@ -36,6 +72,8 @@ Useful checks:
 npm test
 npm run build
 ```
+
+The Docker workflow is preferred for local development. The Brev/NemoClaw sandbox remains the target environment for the customer demo.
 
 ## Project Tracking
 
