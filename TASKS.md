@@ -27,7 +27,8 @@ Status values: `Backlog`, `Ready`, `In Progress`, `In Review`, `Done`, `Blocked`
 | UI-007 | Done | PR 4 | frontend | Polish responsive UI | Desktop and mobile layouts are dense, legible, and free-exploration friendly. |
 | TEST-001 | Done | PR 5 | testing | Add simulator unit tests | Tests cover safe update, power drift, emergency approval, denied OSS lookup, and missing rollback plan. |
 | TEST-002 | Backlog | PR 5 | testing | Add browser smoke tests | Browser checks verify all tabs render and scenario injection updates the dashboard. |
-| TEST-003 | Done | PR 6 | testing | Run package checks in Docker | `npm test` and `npm run build` run inside the local Docker container. |
-| DOCKER-001 | Done | PR 6 | sandbox | Install local Docker runtime | Docker CLI and Colima are installed and Colima is running locally. |
-| DOCKER-002 | Done | PR 6 | sandbox | Add Docker dev workflow | `Dockerfile`, `.dockerignore`, and Docker helper scripts support container-only development. |
-| DOCKER-003 | In Review | PR 6 | sandbox | Publish Docker workflow PR | Branch `codex/docker-dev-environment` is pushed and opened as a draft PR. |
+| TEST-003 | Done | PR #13 | testing | Run package checks in Docker | `npm test` and `npm run build` run inside the local Docker container. |
+| DOCKER-001 | Done | PR #13 | sandbox | Install local Docker runtime | Docker CLI and Colima are installed and Colima is running locally. |
+| DOCKER-002 | Done | PR #13 | sandbox | Add Docker dev workflow | `Dockerfile`, `.dockerignore`, and Docker helper scripts support container-only development. |
+| DOCKER-003 | Done | PR #13 | sandbox | Publish Docker workflow PR | Branch `codex/docker-dev-environment` is pushed and opened as draft PR #13. |
+| DOCKER-004 | Done | Issue #14 | tracking | Create Docker tracking issue | GitHub issue #14 tracks local Docker sandbox work. |
