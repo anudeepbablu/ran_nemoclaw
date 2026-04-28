@@ -32,3 +32,8 @@ Status values: `Backlog`, `Ready`, `In Progress`, `In Review`, `Done`, `Blocked`
 | DOCKER-002 | Done | PR #13 | sandbox | Add Docker dev workflow | `Dockerfile`, `.dockerignore`, and Docker helper scripts support container-only development. |
 | DOCKER-003 | Done | PR #13 | sandbox | Publish Docker workflow PR | Branch `codex/docker-dev-environment` is pushed and opened as draft PR #13. |
 | DOCKER-004 | Done | Issue #14 | tracking | Create Docker tracking issue | GitHub issue #14 tracks local Docker sandbox work. |
+| LIVE-001 | Done | PR #15 | live-nemoclaw | Add live bridge | Host-side bridge streams live NemoClaw/OpenShell status and agent events over SSE. |
+| LIVE-002 | Done | PR #15 | live-nemoclaw | Add NVIDIA `.env` support | `.env.example` documents `NVIDIA_API_KEY`, model, sandbox, and command override. |
+| LIVE-003 | Done | PR #15 | live-nemoclaw | Add NemoClaw setup scripts | Scripts install NemoClaw, run NVIDIA-backed onboarding, and check sandbox status. |
+| LIVE-004 | Ready | PR #15 | live-nemoclaw | Run NemoClaw onboarding | Requires user-created `.env` with `NVIDIA_API_KEY`. |
+| LIVE-005 | Ready | PR #15 | live-nemoclaw | Replace simulated customer path | Customer demo should use live bridge events as the primary story, with simulation only as fallback. |

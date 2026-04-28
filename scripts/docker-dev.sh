@@ -8,4 +8,4 @@ docker run --rm -it \
   -v "$PWD":/workspace \
   -v ran_nemoclaw_node_modules:/workspace/node_modules \
   ran-nemoclaw-dev \
-  sh -lc "npm install && npm run dev -- --host 0.0.0.0"
+  sh -lc "npm install && npm run dev:ui -- --host 0.0.0.0"

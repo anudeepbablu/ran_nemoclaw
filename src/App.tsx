@@ -14,7 +14,7 @@ import {
   TerminalSquare,
   XCircle
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ranSites, scenarios } from "./data/fixtures";
 import { evaluateAllScenarios, evaluateScenario } from "./simulator/evaluateScenario";
 import type { Decision, Evaluation, ScenarioId } from "./types";
@@ -36,6 +36,29 @@ const decisionLabels: Record<Decision, string> = {
   "approval-required": "Approval Required"
 };
 
+const liveApiBase = import.meta.env.VITE_LIVE_API_BASE || "http://localhost:8787";
+
+type LiveStatus = {
+  envFilePresent: boolean;
+  nvidiaApiKeyPresent: boolean;
+  sandboxName: string;
+  nemoclawPresent: boolean;
+  openshellPresent: boolean;
+  dockerReachable: boolean;
+  nemoclawList: string;
+  liveBridgePort: number;
+};
+
+type LiveEvent = {
+  id?: string;
+  timestamp?: string;
+  kind: string;
+  level: string;
+  message: string;
+  command?: string;
+  detail?: LiveStatus;
+};
+
 function statusIcon(decision: Decision) {
   if (decision === "allow") {
     return <CheckCircle2 size={18} />;
@@ -49,8 +72,56 @@ function statusIcon(decision: Decision) {
 function App() {
   const [activeView, setActiveView] = useState<ViewId>("monitor");
   const [activeScenario, setActiveScenario] = useState<ScenarioId>("n78-power-drift");
+  const [liveStatus, setLiveStatus] = useState<LiveStatus | null>(null);
+  const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([]);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [isRunningLiveScenario, setIsRunningLiveScenario] = useState(false);
   const evaluation = useMemo(() => evaluateScenario(activeScenario), [activeScenario]);
   const history = useMemo(() => evaluateAllScenarios(), []);
+
+  useEffect(() => {
+    refreshLiveStatus();
+    const source = new EventSource(`${liveApiBase}/api/live/events`);
+    source.onmessage = (event) => {
+      const parsed = JSON.parse(event.data) as LiveEvent;
+      setLiveEvents((current) => [parsed, ...current].slice(0, 30));
+    };
+    source.onerror = () => {
+      setLiveError("Live bridge is not reachable. Start it with npm run dev:bridge or sh scripts/docker-dev.sh.");
+    };
+    return () => source.close();
+  }, []);
+
+  async function refreshLiveStatus() {
+    try {
+      const response = await fetch(`${liveApiBase}/api/live/status`);
+      const status = (await response.json()) as LiveStatus;
+      setLiveStatus(status);
+      setLiveError(null);
+    } catch {
+      setLiveError("Live bridge is not reachable. Start it with npm run dev:bridge or sh scripts/docker-dev.sh.");
+    }
+  }
+
+  async function runLiveScenario() {
+    setIsRunningLiveScenario(true);
+    try {
+      const response = await fetch(`${liveApiBase}/api/live/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scenarioId: activeScenario })
+      });
+      const result = await response.json();
+      if (!result.ok) {
+        setLiveError(result.error || "Live NemoClaw run did not start.");
+      }
+    } catch {
+      setLiveError("Failed to call the live NemoClaw bridge.");
+    } finally {
+      setIsRunningLiveScenario(false);
+      refreshLiveStatus();
+    }
+  }
 
   return (
     <main className="app-shell">
@@ -117,6 +188,16 @@ function App() {
             })}
           </nav>
 
+          <LiveNemoClawPanel
+            activeScenario={activeScenario}
+            liveError={liveError}
+            liveEvents={liveEvents}
+            liveStatus={liveStatus}
+            isRunningLiveScenario={isRunningLiveScenario}
+            onRefresh={refreshLiveStatus}
+            onRun={runLiveScenario}
+          />
+
           <DashboardHeader evaluation={evaluation} />
 
           {activeView === "monitor" && <LiveMonitor evaluation={evaluation} history={history} />}
@@ -133,6 +214,75 @@ function App() {
 
 function StatusPill({ label, tone }: { label: string; tone: "good" | "danger" }) {
   return <span className={`status-pill ${tone}`}>{label}</span>;
+}
+
+function LiveNemoClawPanel({
+  activeScenario,
+  liveError,
+  liveEvents,
+  liveStatus,
+  isRunningLiveScenario,
+  onRefresh,
+  onRun
+}: {
+  activeScenario: ScenarioId;
+  liveError: string | null;
+  liveEvents: LiveEvent[];
+  liveStatus: LiveStatus | null;
+  isRunningLiveScenario: boolean;
+  onRefresh: () => void;
+  onRun: () => void;
+}) {
+  const liveReady =
+    Boolean(liveStatus?.envFilePresent) &&
+    Boolean(liveStatus?.nvidiaApiKeyPresent) &&
+    Boolean(liveStatus?.nemoclawPresent) &&
+    Boolean(liveStatus?.dockerReachable);
+
+  return (
+    <section className={`live-panel ${liveReady ? "is-live" : "is-waiting"}`}>
+      <div className="live-panel-main">
+        <div className="panel-kicker">
+          <Activity size={16} />
+          Live NemoClaw Runtime
+        </div>
+        <h2>{liveReady ? "Connected to live NemoClaw path" : "Waiting for live NemoClaw setup"}</h2>
+        <p>
+          Scenario buttons call a host-side bridge that runs NemoClaw/OpenShell commands and streams
+          real stdout, stderr, and status events into this UI.
+        </p>
+        {liveError ? <p className="live-error">{liveError}</p> : null}
+      </div>
+      <div className="live-actions">
+        <button className="tab" onClick={onRefresh}>
+          Refresh
+        </button>
+        <button className="tab is-active" disabled={isRunningLiveScenario} onClick={onRun}>
+          {isRunningLiveScenario ? "Starting..." : `Run ${activeScenario}`}
+        </button>
+      </div>
+      <div className="live-status-grid">
+        <BoundaryRow label=".env" value={liveStatus?.envFilePresent ? "Present" : "Missing"} tone={liveStatus?.envFilePresent ? "good" : "danger"} />
+        <BoundaryRow label="NVIDIA key" value={liveStatus?.nvidiaApiKeyPresent ? "Present" : "Missing"} tone={liveStatus?.nvidiaApiKeyPresent ? "good" : "danger"} />
+        <BoundaryRow label="Docker" value={liveStatus?.dockerReachable ? "Ready" : "Missing"} tone={liveStatus?.dockerReachable ? "good" : "danger"} />
+        <BoundaryRow label="NemoClaw" value={liveStatus?.nemoclawPresent ? "Ready" : "Missing"} tone={liveStatus?.nemoclawPresent ? "good" : "danger"} />
+        <BoundaryRow label="OpenShell" value={liveStatus?.openshellPresent ? "Ready" : "Missing"} tone={liveStatus?.openshellPresent ? "good" : "warn"} />
+        <BoundaryRow label="Sandbox" value={liveStatus?.sandboxName || "ran-drift-demo"} tone="neutral" />
+      </div>
+      <div className="live-events">
+        {liveEvents.length === 0 ? (
+          <p>No live bridge events yet.</p>
+        ) : (
+          liveEvents.slice(0, 5).map((event, index) => (
+            <article className={`live-event ${event.level}`} key={event.id || `${event.kind}-${index}`}>
+              <strong>{event.kind}</strong>
+              <p>{event.message}</p>
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  );
 }
 
 function BoundaryRow({

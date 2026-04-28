@@ -75,6 +75,42 @@ npm run build
 
 The Docker workflow is preferred for local development. The Brev/NemoClaw sandbox remains the target environment for the customer demo.
 
+## Live NemoClaw Mode
+
+The app has two layers:
+
+- The browser dashboard at `http://localhost:5173`.
+- A host-side live bridge at `http://localhost:8787` that calls NemoClaw/OpenShell commands and streams events to the UI.
+
+Create a local `.env` file:
+
+```bash
+cp .env.example .env
+```
+
+Set `NVIDIA_API_KEY` in `.env`. The key is loaded by the live bridge and NemoClaw onboarding scripts, and `.env` is ignored by Git.
+
+Install and onboard NemoClaw:
+
+```bash
+sh scripts/nemoclaw-install.sh
+sh scripts/nemoclaw-onboard.sh
+```
+
+Run the host-side live bridge:
+
+```bash
+node server/liveBridge.js
+```
+
+In a second terminal, run the browser dashboard in Docker:
+
+```bash
+sh scripts/docker-dev.sh
+```
+
+The UI will show whether `.env`, Docker, NemoClaw, and OpenShell are actually present. Scenario buttons call the live bridge. If your installed NemoClaw/OpenClaw CLI exposes a different non-interactive agent command, set `NEMOCLAW_AGENT_CMD` in `.env` and include `{prompt}` where the generated RAN prompt should go.
+
 ## Project Tracking
 
 - [docs/PRD.md](docs/PRD.md) defines the product intent and acceptance criteria.
