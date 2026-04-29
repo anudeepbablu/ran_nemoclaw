@@ -1,48 +1,103 @@
+// Host-side bridge.
+//
+// Routes:
+//   GET  /api/live/status   — sandbox + tooling health (powers the Diagnostics drawer)
+//   GET  /api/events        — SSE stream of AgentEvents from the most recent run
+//   POST /api/run           — body { scenarioId } — spawns the in-sandbox agent runner
+//                             and relays its stdout NDJSON as SSE events
+//
+// Spawn strategy:
+//   1. If `openshell` is installed AND the configured sandbox exists, run via
+//        openshell sandbox exec --name <SANDBOX> -- node /workspace/server/agent/runner.mjs --scenario <id>
+//      so the runner is governed by the real OpenShell policy boundary.
+//   2. Otherwise fall back to running the runner on the host (dev mode).
+//      The bridge marks events with mode=dev so the UI can surface that
+//      OpenShell enforcement is not active.
+
 import { spawn } from "node:child_process";
+import { createInterface } from "node:readline";
 import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { publish, subscribe } from "./events.js";
 
-const rootDir = resolve(process.cwd());
-const env = loadEnv(join(rootDir, ".env"));
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "..");
+const env = loadEnv(join(repoRoot, ".env"));
+
 const port = Number(env.LIVE_BRIDGE_PORT || process.env.LIVE_BRIDGE_PORT || 8787);
-const sandboxName = env.NEMOCLAW_SANDBOX || process.env.NEMOCLAW_SANDBOX || "ran-drift-demo";
-const subscribers = new Set();
+const sandboxName =
+  env.OPENSHELL_SANDBOX_NAME ||
+  process.env.OPENSHELL_SANDBOX_NAME ||
+  "ran-drift-demo";
 
-const scenarioPrompts = {
-  "safe-neighbor-update":
-    "You are the NemoClaw RAN drift guard. Review a safe neighbor-list update for DAL-N41-118. Use policy-aware reasoning, identify what OpenShell should validate, and return allow/deny/approval plus evidence.",
-  "n78-power-drift":
-    "You are the NemoClaw RAN drift guard. Review CHI-N78-042 where transmitPowerDbm changes from 34 to 41 on band n78 in the Midwest. Check regional power policy, sandbox limits, tests to run, and remediation.",
-  "emergency-approval":
-    "You are the NemoClaw RAN drift guard. Review NYC-B66-009 emergency-services overlay changing handoverThresholdDb from -108 to -116. Explain why approval may be required and what evidence to collect.",
-  "denied-oss-lookup":
-    "You are the NemoClaw RAN drift guard. Review a request to validate SEA-N258-017 by querying production OSS/NMS. Explain the OpenShell policy boundary and safe alternative.",
-  "missing-rollback":
-    "You are the NemoClaw RAN drift guard. Review CHI-N78-042 handoverThresholdDb change from -105 to -111 with no rollback plan. Decide merge readiness and remediation."
-};
+let activeRun = null; // { child, runId } — at most one run at a time
+
+// ─── env loader ──────────────────────────────────────────────────────────
 
 function loadEnv(path) {
   const loaded = { ...process.env };
-  if (!existsSync(path)) {
-    return loaded;
-  }
-
+  if (!existsSync(path)) return loaded;
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) {
-      continue;
-    }
+    if (!trimmed || trimmed.startsWith("#")) continue;
     const splitAt = trimmed.indexOf("=");
-    if (splitAt === -1) {
-      continue;
-    }
+    if (splitAt === -1) continue;
     const key = trimmed.slice(0, splitAt).trim();
     const rawValue = trimmed.slice(splitAt + 1).trim();
     loaded[key] = rawValue.replace(/^["']|["']$/g, "");
   }
   return loaded;
 }
+
+// ─── shell helpers ───────────────────────────────────────────────────────
+
+function runShell(command) {
+  return new Promise((resolveRun) => {
+    const child = spawn("sh", ["-lc", command], {
+      cwd: repoRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (c) => (stdout += c.toString()));
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+    child.on("close", (code) => resolveRun({ code, stdout, stderr }));
+    child.on("error", (e) => resolveRun({ code: 1, stdout, stderr: e.message }));
+  });
+}
+
+async function getStatus() {
+  const [openshellBin, sandboxList, dockerVer] = await Promise.all([
+    runShell("command -v openshell || true"),
+    runShell("openshell sandbox list --names 2>/dev/null || true"),
+    runShell("docker version --format '{{.Server.Version}}' 2>/dev/null || true")
+  ]);
+
+  const openshellPresent = Boolean(openshellBin.stdout.trim());
+  const sandboxPresent =
+    openshellPresent &&
+    sandboxList.stdout
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .includes(sandboxName);
+
+  return {
+    envFilePresent: existsSync(join(repoRoot, ".env")),
+    nvidiaApiKeyPresent: Boolean(env.NVIDIA_API_KEY),
+    sandboxName,
+    openshellPresent,
+    sandboxPresent,
+    dockerReachable: Boolean(dockerVer.stdout.trim()),
+    sandboxList: sandboxList.stdout.trim(),
+    liveBridgePort: port,
+    mode: openshellPresent && sandboxPresent ? "sandbox" : "dev"
+  };
+}
+
+// ─── HTTP helpers ────────────────────────────────────────────────────────
 
 function json(res, status, body) {
   res.writeHead(status, {
@@ -54,121 +109,124 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function publish(event) {
-  const payload = {
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    timestamp: new Date().toISOString(),
-    ...event
-  };
-  for (const res of subscribers) {
-    res.write(`data: ${JSON.stringify(payload)}\n\n`);
-  }
-  return payload;
+async function readJsonBody(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const raw = Buffer.concat(chunks).toString("utf8") || "{}";
+  return JSON.parse(raw);
 }
 
-function runShell(command) {
-  return new Promise((resolveRun) => {
-    const child = spawn("sh", ["-lc", command], {
-      cwd: rootDir,
-      env,
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("close", (code) => resolveRun({ code, stdout, stderr }));
-    child.on("error", (error) => resolveRun({ code: 1, stdout, stderr: error.message }));
-  });
-}
+// ─── runner spawn + relay ────────────────────────────────────────────────
 
-function shellQuote(value) {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-async function getStatus() {
-  const [nemoclaw, openshell, docker, list] = await Promise.all([
-    runShell("command -v nemoclaw || true"),
-    runShell("command -v openshell || true"),
-    runShell("docker version --format '{{.Server.Version}}' 2>/dev/null || true"),
-    runShell("nemoclaw list 2>/dev/null || true")
-  ]);
-
-  return {
-    envFilePresent: existsSync(join(rootDir, ".env")),
-    nvidiaApiKeyPresent: Boolean(env.NVIDIA_API_KEY),
-    sandboxName,
-    nemoclawPresent: Boolean(nemoclaw.stdout.trim()),
-    openshellPresent: Boolean(openshell.stdout.trim()),
-    dockerReachable: Boolean(docker.stdout.trim()),
-    nemoclawList: list.stdout.trim(),
-    liveBridgePort: port
-  };
-}
-
-function agentCommand(prompt) {
-  const override = env.NEMOCLAW_AGENT_CMD;
-  if (override) {
-    return override.includes("{prompt}")
-      ? override.replace("{prompt}", shellQuote(prompt))
-      : `${override} ${shellQuote(prompt)}`;
-  }
-
-  return [
-    "nemoclaw",
-    shellQuote(sandboxName),
-    "connect --",
-    "openclaw agent --agent main --local --session-id ran-drift-demo -m",
-    shellQuote(prompt)
-  ].join(" ");
-}
-
-async function runScenario(id) {
-  const prompt = scenarioPrompts[id];
-  if (!prompt) {
-    return { ok: false, error: `Unknown scenario: ${id}` };
+async function startRun(scenarioId) {
+  if (activeRun) {
+    return { ok: false, error: "another run is already in progress" };
   }
 
   const status = await getStatus();
-  publish({ kind: "status", level: "info", message: "Live NemoClaw preflight complete.", detail: status });
+  const useSandbox = status.mode === "sandbox";
 
-  if (!status.envFilePresent || !status.nvidiaApiKeyPresent) {
-    const message = "Missing .env or NVIDIA_API_KEY. Add the key, run NemoClaw onboarding, then retry.";
-    publish({ kind: "blocked", level: "error", message });
-    return { ok: false, error: message };
+  const runnerPathHost = "server/agent/runner.mjs";
+  const runnerPathSandbox = "/workspace/server/agent/runner.mjs";
+
+  let child;
+  let cmdLabel;
+  if (useSandbox) {
+    cmdLabel = `openshell sandbox exec --name ${sandboxName} -- node ${runnerPathSandbox} --scenario ${scenarioId}`;
+    child = spawn(
+      "openshell",
+      [
+        "sandbox",
+        "exec",
+        "--name",
+        sandboxName,
+        "--",
+        "node",
+        runnerPathSandbox,
+        "--scenario",
+        scenarioId
+      ],
+      { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] }
+    );
+  } else {
+    cmdLabel = `node ${runnerPathHost} --scenario ${scenarioId}`;
+    child = spawn(
+      "node",
+      [join(repoRoot, runnerPathHost), "--scenario", scenarioId],
+      { cwd: repoRoot, env, stdio: ["ignore", "pipe", "pipe"] }
+    );
   }
 
-  if (!status.nemoclawPresent) {
-    const message = "nemoclaw CLI is not installed yet. Run scripts/nemoclaw-install.sh first.";
-    publish({ kind: "blocked", level: "error", message });
-    return { ok: false, error: message };
-  }
+  const runId = `dispatch-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  activeRun = { child, runId };
 
-  const command = agentCommand(prompt);
-  publish({ kind: "agent", level: "running", message: "Starting live OpenClaw agent turn through NemoClaw.", command });
-
-  const child = spawn("sh", ["-lc", command], {
-    cwd: rootDir,
-    env,
-    stdio: ["ignore", "pipe", "pipe"]
+  publish({
+    kind: "run.dispatched",
+    runId,
+    scenarioId,
+    mode: status.mode,
+    cmd: cmdLabel,
+    t: nowHM()
   });
 
-  child.stdout.on("data", (chunk) => publish({ kind: "stdout", level: "info", message: chunk.toString() }));
-  child.stderr.on("data", (chunk) => publish({ kind: "stderr", level: "warn", message: chunk.toString() }));
-  child.on("close", (code) => {
+  // stdout: parse NDJSON line-by-line, forward each as an SSE event.
+  const out = createInterface({ input: child.stdout });
+  out.on("line", (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return;
+    try {
+      const event = JSON.parse(trimmed);
+      publish(event);
+    } catch (err) {
+      publish({
+        kind: "run.warning",
+        runId,
+        message: `non-JSON line from runner: ${trimmed.slice(0, 200)}`,
+        t: nowHM()
+      });
+    }
+  });
+
+  // stderr: surface as warnings.
+  child.stderr.on("data", (chunk) => {
     publish({
-      kind: "agent",
-      level: code === 0 ? "complete" : "error",
-      message: `Live NemoClaw agent command exited with code ${code}.`
+      kind: "run.warning",
+      runId,
+      message: chunk.toString().trim(),
+      t: nowHM()
     });
   });
 
-  return { ok: true };
+  child.on("close", (code) => {
+    publish({
+      kind: "run.exit",
+      runId,
+      code: code ?? 1,
+      t: nowHM()
+    });
+    if (activeRun?.child === child) activeRun = null;
+  });
+
+  child.on("error", (err) => {
+    publish({
+      kind: "run.error",
+      runId,
+      message: err.message,
+      t: nowHM()
+    });
+    if (activeRun?.child === child) activeRun = null;
+  });
+
+  return { ok: true, runId, mode: status.mode };
 }
+
+function nowHM() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+// ─── HTTP server ──────────────────────────────────────────────────────────
 
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
@@ -181,38 +239,46 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  if (req.url === "/api/live/events" && req.method === "GET") {
+  if (req.url === "/api/events" && req.method === "GET") {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
       "Access-Control-Allow-Origin": "*"
     });
-    subscribers.add(res);
-    res.write(`data: ${JSON.stringify({ kind: "bridge", level: "info", message: "Live bridge connected." })}\n\n`);
-    req.on("close", () => subscribers.delete(res));
+    const unsubscribe = subscribe(res);
+    res.write(
+      `data: ${JSON.stringify({
+        kind: "bridge.connected",
+        t: nowHM()
+      })}\n\n`
+    );
+    req.on("close", unsubscribe);
     return;
   }
 
-  if (req.url === "/api/live/run" && req.method === "POST") {
-    let body = "";
-    req.on("data", (chunk) => {
-      body += chunk.toString();
-    });
-    req.on("end", async () => {
-      try {
-        const parsed = JSON.parse(body || "{}");
-        json(res, 200, await runScenario(parsed.scenarioId));
-      } catch (error) {
-        json(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+  if (req.url === "/api/run" && req.method === "POST") {
+    try {
+      const body = await readJsonBody(req);
+      if (!body.scenarioId) {
+        json(res, 400, { ok: false, error: "scenarioId required" });
+        return;
       }
-    });
+      const result = await startRun(body.scenarioId);
+      json(res, result.ok ? 202 : 409, result);
+    } catch (err) {
+      json(res, 400, {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
     return;
   }
 
-  json(res, 404, { error: "Not found" });
+  json(res, 404, { error: "not found" });
 });
 
 server.listen(port, () => {
-  console.log(`Live NemoClaw bridge listening on http://localhost:${port}`);
+  console.log(`live bridge listening on http://localhost:${port}`);
+  console.log(`sandbox name: ${sandboxName}`);
 });

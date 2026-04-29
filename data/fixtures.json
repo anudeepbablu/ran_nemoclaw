@@ -1,0 +1,368 @@
+{
+  "scenarios": [
+    {
+      "id": "safe-update",
+      "title": "Safe Neighbor Update",
+      "short": "Safe Update",
+      "severity": "LOW",
+      "chg": "CHG-1001",
+      "site": "DAL-N41-018",
+      "vendor": "Nokia",
+      "band": "n41",
+      "region": "South Central",
+      "summary": "Add an approved neighbor relation between two adjacent Dallas n41 cells. Within policy envelope.",
+      "risk": 14,
+      "decision": "Allowed",
+      "diff": [
+        { "op": "+", "path": "cellRelation[18]", "value": "PCI=412 → PCI=419 (intra-freq, intra-vendor)" },
+        { "op": "+", "path": "handover.threshold.dB", "value": "-104" }
+      ],
+      "rules": [
+        { "id": "P-001", "name": "Change window respected", "verdict": "pass", "input": "window=02:00-04:00 CT, requested=02:30 CT" },
+        { "id": "P-014", "name": "Vendor allowlist", "verdict": "pass", "input": "vendor=Nokia ∈ {Nokia, Ericsson, Samsung}" },
+        { "id": "P-022", "name": "Power envelope unchanged", "verdict": "pass", "input": "Δp=0 dBm" },
+        { "id": "P-031", "name": "Neighbor relation sanity", "verdict": "pass", "input": "intra-freq, distance=1.4km, RSRP overlap=−92dBm" },
+        { "id": "P-040", "name": "Production OSS reach required", "verdict": "skip", "input": "change is internal RAG-validated; no OSS write" },
+        { "id": "P-055", "name": "PII / subscriber data touched", "verdict": "pass", "input": "no subscriber identifiers in payload" }
+      ],
+      "openshell": [
+        { "cmd": "nemoclaw inspect chg/CHG-1001", "dur": 220, "status": "ok", "code": 0, "out": "parsed change descriptor\n  site=DAL-N41-018\n  vendor=Nokia band=n41\n  ops=2 (add neighbor, set threshold)" },
+        { "cmd": "rag.search \"neighbor relation policy n41 dallas\"", "dur": 410, "status": "ok", "code": 0, "out": "matched 4 chunks (sim.cosine ≥ 0.81)\n  POL-RAN-014.md §3.2\n  POL-RAN-014.md §4.1\n  RUNBOOK-NBR.md §2\n  RGN-SOUTH.md §1" },
+        { "cmd": "policy.eval --change CHG-1001 --rules /etc/ran/*.yaml", "dur": 380, "status": "ok", "code": 0, "out": "5 pass · 1 skip · 0 fail\nrisk_score=14/100\nverdict=Allowed" },
+        { "cmd": "simulate.unit-tests --suite ran/neighbor", "dur": 1100, "status": "ok", "code": 0, "out": "✓ neighbor_unique\n✓ pci_no_collision\n✓ rsrp_overlap_within_bounds\n✓ handover_threshold_in_range\n4 passed in 1.08s" },
+        { "cmd": "audit.write --decision allow --change CHG-1001", "dur": 140, "status": "ok", "code": 0, "out": "wrote audit/2026-04-28T10-31-04.json\nsigned with sandbox key" }
+      ],
+      "timeline": [
+        { "t": "10:31:00", "kind": "monitor", "text": "24/7 monitor detected CHG-1001 in staging queue." },
+        { "t": "10:31:02", "kind": "rag", "text": "Retrieved 4 internal RAN policy chunks. Top: POL-RAN-014.md §3.2." },
+        { "t": "10:31:04", "kind": "policy", "text": "6 rules evaluated. 5 pass, 1 skip. Risk 14/100." },
+        { "t": "10:31:05", "kind": "tests", "text": "Ran 4 unit checks against neighbor relation. All pass." },
+        { "t": "10:31:06", "kind": "decision", "text": "Verdict: Allowed. Auto-approved within sandbox boundary." },
+        { "t": "10:31:06", "kind": "audit", "text": "Audit entry signed and written." }
+      ],
+      "rag": [
+        {
+          "id": "POL-RAN-014",
+          "section": "§3.2 Neighbor relations",
+          "sim": 0.91,
+          "used": ["rag", "policy"],
+          "body": "Intra-frequency neighbor additions on n41 within the South Central region MAY be auto-approved when (a) the candidate cell is operated by an allowlisted vendor, (b) RSRP overlap at the boundary falls within −95 to −85 dBm, and (c) no PCI conflict is induced within a 2-tier neighbor graph.",
+          "highlight": "MAY be auto-approved when (a) the candidate cell is operated by an allowlisted vendor"
+        },
+        {
+          "id": "POL-RAN-014",
+          "section": "§4.1 Vendor allowlist",
+          "sim": 0.84,
+          "used": ["policy"],
+          "body": "The current vendor allowlist for South Central n41 is: Nokia, Ericsson, Samsung. Any neighbor relation involving a non-allowlisted vendor MUST be routed through Tier-2 review.",
+          "highlight": "Nokia, Ericsson, Samsung"
+        },
+        {
+          "id": "RUNBOOK-NBR",
+          "section": "§2 Add neighbor",
+          "sim": 0.81,
+          "used": ["rag"],
+          "body": "Use the staging queue for any neighbor add. Do not write directly to production OSS. The drift guard will validate, run unit tests, and emit a signed audit record before promotion.",
+          "highlight": "Do not write directly to production OSS."
+        },
+        {
+          "id": "RGN-SOUTH",
+          "section": "§1 Region scope",
+          "sim": 0.76,
+          "used": ["rag"],
+          "body": "The South Central region covers Texas, Oklahoma, Arkansas, and Louisiana sites operating on bands n41, n71, and n78.",
+          "highlight": "Texas, Oklahoma, Arkansas, and Louisiana"
+        }
+      ]
+    },
+    {
+      "id": "power-drift",
+      "title": "n78 Transmit-Power Drift",
+      "short": "Power Drift",
+      "severity": "HIGH",
+      "chg": "CHG-1002",
+      "site": "CHI-N78-042",
+      "vendor": "Ericsson",
+      "band": "n78",
+      "region": "Midwest",
+      "summary": "A Midwest n78 change raises transmit power above the approved regional cap.",
+      "risk": 78,
+      "decision": "Denied",
+      "diff": [
+        { "op": "~", "path": "cell.tx.maxPower.dBm", "value": "43 → 47" },
+        { "op": "~", "path": "cell.tilt.electrical.deg", "value": "6 → 4" }
+      ],
+      "rules": [
+        { "id": "P-001", "name": "Change window respected", "verdict": "pass", "input": "window=02:00-04:00 CT, requested=02:48 CT" },
+        { "id": "P-014", "name": "Vendor allowlist", "verdict": "pass", "input": "vendor=Ericsson ∈ {Nokia, Ericsson, Samsung}" },
+        { "id": "P-022", "name": "Power envelope", "verdict": "fail", "input": "Δp=+4dBm; cap for Midwest n78 = 43 dBm; requested 47 dBm" },
+        { "id": "P-024", "name": "Tilt × power coupling", "verdict": "fail", "input": "tilt narrowed from 6° to 4° while power +4dBm — interference budget exceeded" },
+        { "id": "P-031", "name": "Neighbor relation sanity", "verdict": "pass", "input": "(no neighbor changes)" },
+        { "id": "P-055", "name": "PII / subscriber data touched", "verdict": "pass", "input": "no subscriber identifiers" }
+      ],
+      "openshell": [
+        { "cmd": "nemoclaw inspect chg/CHG-1002", "dur": 240, "status": "ok", "code": 0, "out": "parsed change descriptor\n  site=CHI-N78-042\n  vendor=Ericsson band=n78\n  ops=2 (Δ tx.maxPower, Δ tilt.electrical)" },
+        { "cmd": "rag.search \"n78 transmit power cap midwest\"", "dur": 480, "status": "ok", "code": 0, "out": "matched 5 chunks (sim.cosine ≥ 0.78)\n  POL-RAN-007.md §2.4 ← regional power cap\n  POL-RAN-007.md §2.5\n  RGN-MIDWEST.md §3\n  POL-RAN-019.md §1.2 ← tilt/power coupling\n  RUNBOOK-PWR.md §1" },
+        { "cmd": "policy.eval --change CHG-1002 --rules /etc/ran/*.yaml", "dur": 410, "status": "ok", "code": 0, "out": "4 pass · 0 skip · 2 fail\n  P-022 fail: power envelope exceeded\n  P-024 fail: tilt/power coupling\nrisk_score=78/100\nverdict=Denied" },
+        { "cmd": "oss.read prod://chi-n78-042/current --dry-run", "dur": 220, "status": "denied", "code": 13, "out": "sandbox boundary: production OSS read refused\nreason: P-040 forbids prod OSS reach in evaluation phase" },
+        { "cmd": "simulate.interference --site CHI-N78-042 --tx 47 --tilt 4", "dur": 1480, "status": "warn", "code": 0, "out": "projected SINR drop on 3 neighbors:\n  CHI-N78-041: −2.1 dB\n  CHI-N78-043: −1.8 dB\n  CHI-N78-055: −1.4 dB\nbreach: regional interference budget" },
+        { "cmd": "audit.write --decision deny --change CHG-1002", "dur": 150, "status": "ok", "code": 0, "out": "wrote audit/2026-04-28T10-33-12.json\nsigned with sandbox key" }
+      ],
+      "timeline": [
+        { "t": "10:33:04", "kind": "monitor", "text": "24/7 monitor detected proposed RAN config change." },
+        { "t": "10:33:08", "kind": "rag", "text": "Retrieved scoped internal RAN policy evidence." },
+        { "t": "10:33:11", "kind": "policy", "text": "6 rules evaluated. 2 fail (power envelope, tilt coupling)." },
+        { "t": "10:33:12", "kind": "guard", "text": "Production OSS read refused at sandbox boundary." },
+        { "t": "10:33:14", "kind": "tests", "text": "Interference simulation: 3 neighbors degrade ≥ 1.4 dB SINR." },
+        { "t": "10:33:15", "kind": "decision", "text": "Verdict: Denied. Risk score 78/100. Remediation drafted." },
+        { "t": "10:33:15", "kind": "audit", "text": "Audit entry signed and written." }
+      ],
+      "rag": [
+        {
+          "id": "POL-RAN-007",
+          "section": "§2.4 Regional power caps",
+          "sim": 0.93,
+          "used": ["rag", "policy"],
+          "body": "For the Midwest region operating on band n78, the maximum transmit power per cell SHALL NOT exceed 43 dBm without a Tier-3 RF engineering review and an interference budget reconciliation. Any change raising tx.maxPower beyond this threshold MUST be denied by the drift guard.",
+          "highlight": "maximum transmit power per cell SHALL NOT exceed 43 dBm"
+        },
+        {
+          "id": "POL-RAN-019",
+          "section": "§1.2 Tilt/power coupling",
+          "sim": 0.88,
+          "used": ["rag", "policy"],
+          "body": "Reducing electrical tilt while simultaneously raising transmit power compounds interference into adjacent cells. Combined adjustments to tilt and tx power within a single change require an interference simulation and explicit reviewer sign-off.",
+          "highlight": "Combined adjustments to tilt and tx power within a single change require an interference simulation"
+        },
+        {
+          "id": "RGN-MIDWEST",
+          "section": "§3 Coverage envelope",
+          "sim": 0.81,
+          "used": ["rag"],
+          "body": "Chicago metro n78 cells are deployed in a tight reuse pattern. The regional plan budgets ≤ 0.5 dB SINR loss per neighbor for any single change.",
+          "highlight": "≤ 0.5 dB SINR loss per neighbor"
+        },
+        {
+          "id": "RUNBOOK-PWR",
+          "section": "§1 Power changes",
+          "sim": 0.79,
+          "used": ["rag"],
+          "body": "Power-affecting changes must be staged. Direct production OSS writes are forbidden during evaluation; the sandbox boundary will refuse the call.",
+          "highlight": "Direct production OSS writes are forbidden during evaluation"
+        },
+        {
+          "id": "POL-RAN-007",
+          "section": "§2.5 Escalation path",
+          "sim": 0.78,
+          "used": ["policy"],
+          "body": "A denied power change is returned to the requester with a remediation draft enumerating the cap, the requested delta, and the simulated interference impact on neighbors.",
+          "highlight": "remediation draft enumerating the cap, the requested delta"
+        }
+      ]
+    },
+    {
+      "id": "emergency",
+      "title": "Emergency 911 Routing Approval",
+      "short": "Emergency Approval",
+      "severity": "CRITICAL",
+      "chg": "CHG-1003",
+      "site": "DEN-MULTI-007",
+      "vendor": "Samsung",
+      "band": "n71",
+      "region": "Mountain",
+      "summary": "Re-route emergency-services traffic during a fiber outage. High blast radius — requires human approval gate.",
+      "risk": 62,
+      "decision": "Approval",
+      "diff": [
+        { "op": "~", "path": "core.routing.911.primary", "value": "fiber-A → fiber-C (failover)" },
+        { "op": "~", "path": "core.routing.911.secondary", "value": "fiber-B → microwave-link-9" }
+      ],
+      "rules": [
+        { "id": "P-001", "name": "Change window respected", "verdict": "skip", "input": "emergency override invoked" },
+        { "id": "P-014", "name": "Vendor allowlist", "verdict": "pass", "input": "vendor=Samsung ∈ allowlist" },
+        { "id": "P-070", "name": "E911 routing affected", "verdict": "fail", "input": "911 primary path mutates → forces human approval", "onFail": "approve" },
+        { "id": "P-071", "name": "Fallback path verified", "verdict": "pass", "input": "microwave-link-9 healthy, latency 11ms" },
+        { "id": "P-080", "name": "Two-person approval", "verdict": "pending", "input": "awaiting RF Lead + NOC Director" },
+        { "id": "P-055", "name": "PII / subscriber data touched", "verdict": "pass", "input": "no subscriber identifiers" }
+      ],
+      "openshell": [
+        { "cmd": "nemoclaw inspect chg/CHG-1003", "dur": 250, "status": "ok", "code": 0, "out": "parsed change descriptor\n  emergency=true\n  blast_radius=high\n  affected_services=[E911, NG911]" },
+        { "cmd": "rag.search \"emergency 911 routing failover policy\"", "dur": 460, "status": "ok", "code": 0, "out": "matched 3 chunks\n  POL-E911-001.md §1\n  POL-E911-001.md §3.4 ← two-person approval\n  RUNBOOK-FAILOVER.md §2" },
+        { "cmd": "policy.eval --change CHG-1003 --rules /etc/ran/*.yaml", "dur": 420, "status": "warn", "code": 0, "out": "3 pass · 1 skip · 1 fail · 1 pending\n  P-070 fail: forces human gate\n  P-080 pending: 2-person approval\nrisk_score=62/100\nverdict=Approval-Required" },
+        { "cmd": "simulate.failover --primary fiber-C --secondary mw-9", "dur": 1620, "status": "ok", "code": 0, "out": "failover converges in 1.4s\n  E911 path-cost=22ms (was 9ms)\n  NG911 path-cost=24ms\n  no calls dropped in simulated window" },
+        { "cmd": "approval.request --to rf-lead,noc-director --ttl 15m", "dur": 180, "status": "ok", "code": 0, "out": "request id=APR-2206\nnotified: rf-lead@sandbox, noc-director@sandbox\nstatus=pending" },
+        { "cmd": "audit.write --decision approval-required --change CHG-1003", "dur": 140, "status": "ok", "code": 0, "out": "wrote audit/2026-04-28T10-35-22.json" }
+      ],
+      "timeline": [
+        { "t": "10:35:08", "kind": "monitor", "text": "Emergency change submitted: E911 routing failover (DEN-MULTI-007)." },
+        { "t": "10:35:10", "kind": "rag", "text": "Retrieved E911 failover policy + runbook." },
+        { "t": "10:35:14", "kind": "policy", "text": "6 rules evaluated. P-070 forces human approval gate." },
+        { "t": "10:35:16", "kind": "tests", "text": "Failover simulation converges in 1.4s, no dropped calls." },
+        { "t": "10:35:17", "kind": "guard", "text": "Two-person approval requested (RF Lead + NOC Director)." },
+        { "t": "10:35:18", "kind": "decision", "text": "Verdict: Approval Required. Awaiting human signoff." },
+        { "t": "10:35:18", "kind": "audit", "text": "Audit entry written; pending approver responses." }
+      ],
+      "rag": [
+        {
+          "id": "POL-E911-001",
+          "section": "§3.4 Two-person approval",
+          "sim": 0.94,
+          "used": ["rag", "policy"],
+          "body": "Any change that mutates the primary or secondary E911 routing path MUST require two-person approval from the RF Lead and the NOC Director. The drift guard SHALL NOT auto-approve E911 path changes regardless of risk score.",
+          "highlight": "two-person approval from the RF Lead and the NOC Director"
+        },
+        {
+          "id": "POL-E911-001",
+          "section": "§1 Scope",
+          "sim": 0.86,
+          "used": ["rag"],
+          "body": "This policy governs all changes affecting E911 and NG911 call routing for cells operating in the Mountain, Midwest, and Pacific regions.",
+          "highlight": "all changes affecting E911 and NG911 call routing"
+        },
+        {
+          "id": "RUNBOOK-FAILOVER",
+          "section": "§2 Microwave failover",
+          "sim": 0.82,
+          "used": ["rag"],
+          "body": "Microwave link 9 is the sanctioned secondary path during fiber outages in the Denver metro. Acceptable converged path-cost is ≤ 30 ms.",
+          "highlight": "Microwave link 9 is the sanctioned secondary path"
+        }
+      ]
+    },
+    {
+      "id": "oss-lookup",
+      "title": "OSS Lookup From Sandbox",
+      "short": "OSS Lookup",
+      "severity": "MEDIUM",
+      "chg": "CHG-1004",
+      "site": "PHX-N41-029",
+      "vendor": "Nokia",
+      "band": "n41",
+      "region": "Southwest",
+      "summary": "Operator asks the agent to fetch live cell state from production OSS. The sandbox boundary refuses the call.",
+      "risk": 41,
+      "decision": "Denied",
+      "diff": [
+        { "op": "?", "path": "oss.read", "value": "GET prod-oss://cell/PHX-N41-029/state (requested)" }
+      ],
+      "rules": [
+        { "id": "P-001", "name": "Change window respected", "verdict": "skip", "input": "read-only query, no write" },
+        { "id": "P-040", "name": "Production OSS reach", "verdict": "fail", "input": "destination=prod-oss; sandbox policy blocks egress" },
+        { "id": "P-050", "name": "Internal RAG fallback available", "verdict": "pass", "input": "last-known state in internal datastore (24h stale)" },
+        { "id": "P-055", "name": "PII / subscriber data touched", "verdict": "pass", "input": "cell-level only, no IMSI/MSISDN" }
+      ],
+      "openshell": [
+        { "cmd": "nemoclaw inspect query/CELL-LOOKUP", "dur": 200, "status": "ok", "code": 0, "out": "parsed query\n  site=PHX-N41-029 fields=[tx,tilt,kpis]\n  destination=prod-oss" },
+        { "cmd": "sandbox.allowlist check --dest prod-oss.internal", "dur": 120, "status": "denied", "code": 13, "out": "destination not in egress allowlist\nallowed: [internal-rag, audit-store, sim-cluster]" },
+        { "cmd": "oss.read prod://phx-n41-029/state", "dur": 80, "status": "denied", "code": 13, "out": "sandbox boundary: egress refused\nreason: P-040 production OSS reach blocked" },
+        { "cmd": "rag.search \"phx-n41-029 last known state\"", "dur": 380, "status": "ok", "code": 0, "out": "matched 1 internal record\n  CELL-CACHE/PHX-N41-029.json (age=23h41m)" },
+        { "cmd": "policy.eval --query CELL-LOOKUP", "dur": 360, "status": "ok", "code": 0, "out": "2 pass · 1 skip · 1 fail\n  P-040 fail: prod OSS blocked\nrisk_score=41/100\nverdict=Denied (with internal fallback offered)" },
+        { "cmd": "audit.write --decision deny --query CELL-LOOKUP", "dur": 130, "status": "ok", "code": 0, "out": "wrote audit/2026-04-28T10-37-04.json" }
+      ],
+      "timeline": [
+        { "t": "10:36:58", "kind": "monitor", "text": "Operator requested live OSS read for PHX-N41-029." },
+        { "t": "10:37:00", "kind": "guard", "text": "Egress allowlist check: prod-oss not allowed." },
+        { "t": "10:37:01", "kind": "guard", "text": "Production OSS read refused at sandbox boundary." },
+        { "t": "10:37:02", "kind": "rag", "text": "Internal cache hit: state from 23h41m ago available." },
+        { "t": "10:37:04", "kind": "policy", "text": "4 rules evaluated. Risk 41/100." },
+        { "t": "10:37:04", "kind": "decision", "text": "Verdict: Denied. Internal fallback offered to operator." }
+      ],
+      "rag": [
+        {
+          "id": "POL-SANDBOX-002",
+          "section": "§1 Egress allowlist",
+          "sim": 0.92,
+          "used": ["rag", "policy"],
+          "body": "Outbound calls from the NemoClaw sandbox are restricted to the egress allowlist: internal-rag, audit-store, sim-cluster. Production OSS, NMS, and customer-facing systems are explicitly forbidden.",
+          "highlight": "Production OSS, NMS, and customer-facing systems are explicitly forbidden."
+        },
+        {
+          "id": "POL-SANDBOX-002",
+          "section": "§2 Fallback strategy",
+          "sim": 0.84,
+          "used": ["rag"],
+          "body": "When a forbidden destination is queried, the agent SHALL offer the most recent internal-cache record and SHALL annotate the response with the cache age.",
+          "highlight": "agent SHALL offer the most recent internal-cache record"
+        }
+      ]
+    },
+    {
+      "id": "no-rollback",
+      "title": "Change Without Rollback Plan",
+      "short": "No Rollback",
+      "severity": "HIGH",
+      "chg": "CHG-1005",
+      "site": "SEA-N78-011",
+      "vendor": "Ericsson",
+      "band": "n78",
+      "region": "Pacific",
+      "summary": "Beamforming weights update submitted without an attached rollback plan or test suite.",
+      "risk": 71,
+      "decision": "Denied",
+      "diff": [
+        { "op": "~", "path": "cell.beamforming.weights", "value": "<binary, 3.2 KB>" },
+        { "op": "−", "path": "change.rollback_plan", "value": "missing" },
+        { "op": "−", "path": "change.test_suite", "value": "missing" }
+      ],
+      "rules": [
+        { "id": "P-001", "name": "Change window respected", "verdict": "pass", "input": "window=02:00-04:00 PT, requested=03:11 PT" },
+        { "id": "P-014", "name": "Vendor allowlist", "verdict": "pass", "input": "vendor=Ericsson ∈ allowlist" },
+        { "id": "P-090", "name": "Rollback plan present", "verdict": "fail", "input": "change.rollback_plan = null" },
+        { "id": "P-091", "name": "Pre-merge test suite present", "verdict": "fail", "input": "change.test_suite = null" },
+        { "id": "P-022", "name": "Power envelope unchanged", "verdict": "pass", "input": "Δp=0 dBm" },
+        { "id": "P-055", "name": "PII / subscriber data touched", "verdict": "pass", "input": "no subscriber identifiers" }
+      ],
+      "openshell": [
+        { "cmd": "nemoclaw inspect chg/CHG-1005", "dur": 230, "status": "ok", "code": 0, "out": "parsed change descriptor\n  site=SEA-N78-011\n  ops=1 (beamforming weights)\n  rollback_plan=<missing>\n  test_suite=<missing>" },
+        { "cmd": "rag.search \"beamforming change rollback policy\"", "dur": 420, "status": "ok", "code": 0, "out": "matched 3 chunks\n  POL-RAN-030.md §2 ← mandatory rollback\n  POL-RAN-030.md §3 ← mandatory tests\n  RUNBOOK-BEAM.md §1" },
+        { "cmd": "policy.eval --change CHG-1005 --rules /etc/ran/*.yaml", "dur": 400, "status": "ok", "code": 0, "out": "4 pass · 0 skip · 2 fail\n  P-090 fail: rollback missing\n  P-091 fail: tests missing\nrisk_score=71/100\nverdict=Denied" },
+        { "cmd": "remediation.draft --change CHG-1005", "dur": 720, "status": "ok", "code": 0, "out": "drafted remediation:\n  1. attach rollback plan referencing prior weights blob\n  2. attach pre-merge test suite (≥ ran/beamforming/*)\n  3. resubmit with both artifacts\nestimated reviewer time: 12m" },
+        { "cmd": "audit.write --decision deny --change CHG-1005", "dur": 140, "status": "ok", "code": 0, "out": "wrote audit/2026-04-28T10-39-44.json" }
+      ],
+      "timeline": [
+        { "t": "10:39:30", "kind": "monitor", "text": "Beamforming change submitted for SEA-N78-011." },
+        { "t": "10:39:32", "kind": "rag", "text": "Retrieved beamforming change policy and runbook." },
+        { "t": "10:39:36", "kind": "policy", "text": "6 rules evaluated. P-090, P-091 failed." },
+        { "t": "10:39:42", "kind": "tests", "text": "Remediation drafted: rollback plan + test suite required." },
+        { "t": "10:39:44", "kind": "decision", "text": "Verdict: Denied. Risk 71/100. Returned with remediation." },
+        { "t": "10:39:44", "kind": "audit", "text": "Audit entry signed and written." }
+      ],
+      "rag": [
+        {
+          "id": "POL-RAN-030",
+          "section": "§2 Mandatory rollback",
+          "sim": 0.95,
+          "used": ["rag", "policy"],
+          "body": "Every change that mutates beamforming weights, scheduler parameters, or PHY-layer configuration MUST attach a rollback plan referencing the prior committed value. Changes lacking a rollback plan SHALL be denied by the drift guard.",
+          "highlight": "Changes lacking a rollback plan SHALL be denied by the drift guard."
+        },
+        {
+          "id": "POL-RAN-030",
+          "section": "§3 Mandatory tests",
+          "sim": 0.88,
+          "used": ["rag", "policy"],
+          "body": "PHY-layer changes additionally require a pre-merge test suite covering at minimum: weight integrity, scheduler stability, and KPI envelope. Absent test artifacts, the drift guard SHALL deny the change.",
+          "highlight": "Absent test artifacts, the drift guard SHALL deny the change."
+        },
+        {
+          "id": "RUNBOOK-BEAM",
+          "section": "§1 Beamforming changes",
+          "sim": 0.79,
+          "used": ["rag"],
+          "body": "Beamforming changes are high-risk: misconfigured weights can de-beam an entire sector. Always stage, simulate, and stand by during the post-merge KPI window.",
+          "highlight": "misconfigured weights can de-beam an entire sector"
+        }
+      ]
+    }
+  ],
+  "queueItems": [
+    { "id": "q1", "title": "Add approved neighbor relation", "meta": "Dallas / Nokia / n41", "verdict": "Allowed", "scenario": "safe-update" },
+    { "id": "q2", "title": "Increase n78 transmit power", "meta": "Chicago / Ericsson / n78", "verdict": "Denied", "scenario": "power-drift" },
+    { "id": "q3", "title": "E911 routing failover", "meta": "Denver / Samsung / n71", "verdict": "Approval", "scenario": "emergency" },
+    { "id": "q4", "title": "OSS lookup PHX-N41-029", "meta": "Phoenix / Nokia / n41", "verdict": "Denied", "scenario": "oss-lookup" },
+    { "id": "q5", "title": "Beamforming weight update", "meta": "Seattle / Ericsson / n78", "verdict": "Denied", "scenario": "no-rollback" },
+    { "id": "q6", "title": "Tilt adjustment +1°", "meta": "Atlanta / Samsung / n41", "verdict": "Allowed" },
+    { "id": "q7", "title": "PCI re-plan group B", "meta": "Boston / Nokia / n78", "verdict": "Allowed" },
+    { "id": "q8", "title": "Vendor lib bump 23.4→23.5", "meta": "Global / Ericsson", "verdict": "Approval" }
+  ]
+}

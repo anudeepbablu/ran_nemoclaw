@@ -1,122 +1,123 @@
-# NemoClaw 24/7 RAN Drift Guard Demo
+# RAN Drift Guard — NemoClaw Customer Demo
 
-A sandbox-hosted telecom demo that shows how a NemoClaw-powered assistant can monitor RAN configuration drift around the clock, evaluate internal engineering policy, run controlled OpenShell checks, and produce auditable remediation guidance.
+An OpenShell-sandboxed telecom demo showing how a NemoClaw-powered agent can monitor RAN configuration drift 24/7, retrieve scoped internal policy evidence, run sandboxed validation, and produce an auditable allow / deny / approval-required decision — without touching production OSS, NMS, or subscriber data.
 
-The first audience is platform and security leadership. The UI makes the safety boundary visible: Brev sandbox status, OpenShell command control, Policy Engine decisions, blocked production OSS/NMS access, and simulated internal RAG evidence.
+The audience is platform and security leadership. Every authority boundary is visible in the UI: the OpenShell sandbox, the deterministic Policy Engine, the network egress allowlist that blocks production systems, and the internal RAG evidence the agent grounded its decision on.
 
-## Demo Shape
+## Demo Architecture
 
-- Standalone React/Vite TypeScript app.
-- Browser-only deterministic simulation.
-- No live customer systems, production telemetry, subscriber data, or real OSS/NMS calls.
-- Designed to run inside a Brev/NemoClaw sandbox.
+```
+Browser UI (Vite/React/TS, :5173)
+   │  HTTP + SSE
+   ▼
+Host bridge (node server/liveBridge.js, :8787)
+   │  spawns:  openshell sandbox exec --name ran-drift-demo -- node /workspace/server/agent/runner.mjs --scenario <id>
+   ▼
+OpenShell sandbox (containerized, governed by policies/ran-drift-demo.yaml)
+   │
+   ├─ in-sandbox runner: tool-calling agent (Nemotron via OpenShell inference proxy)
+   ├─ each tool call: subprocess governed by sandbox network/FS/process policy
+   └─ "denied prod-OSS" is a real proxy 403, not a simulation
+```
 
-## Planned PR Sequence
+Two enforcement planes show up in the UI:
 
-| PR | Branch | Focus |
-| --- | --- | --- |
-| 1 | `codex/docs-prd-task-list` | PRD, task board, and repo overview |
-| 2 | `codex/app-scaffold` | React/Vite shell, navigation, and sandbox status |
-| 3 | `codex/ran-simulator` | RAN fixtures, scenario engine, policy decisions, audit events |
-| 4 | `codex/visual-dashboards` | Live monitor, RAN impact, Policy Engine, OpenShell, RAG, audit views |
-| 5 | `codex/tests-demo-readiness` | Simulator tests, UI checks, demo runbook |
+- **OpenShell Policy Engine** — governs *what the agent can do*: which hosts it can reach, which paths it can write, which binaries can spawn what. Real proxy/Landlock/syscall enforcement defined in `policies/ran-drift-demo.yaml`.
+- **Deterministic Policy validator** — governs *whether the proposed RAN change is approved*: rule-by-rule verdicts producing Allowed / Denied / Approval. Lives in `src/policy/validator.ts` (and a JS mirror at `server/agent/policy.js`); has veto power over the LLM's proposal.
 
-## Docker Development
+## Quickstart
 
-All development and validation should run in the local Docker runtime. On macOS this repo uses the Docker CLI with Colima.
+### 1. Install OpenShell (one-time)
 
-One-time local runtime setup:
+OpenShell is a real prerequisite. Install with:
 
 ```bash
-brew install docker colima
-colima start --cpu 4 --memory 8 --disk 40
-docker version
+sh scripts/openshell-install.sh
 ```
 
-Build the development image:
+This wraps the official installer (`https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh`) and verifies Docker is running. Add `~/.local/bin` to your `PATH` if it isn't already.
+
+### 2. Configure secrets
 
 ```bash
-sh scripts/docker-build.sh
+cp .env.example .env
+# edit .env: set NVIDIA_API_KEY to your build.nvidia.com key
 ```
 
-Run the app in a container:
+### 3. Bootstrap the sandbox
 
 ```bash
-sh scripts/docker-dev.sh
+sh scripts/openshell-bootstrap.sh
 ```
 
-Then open:
+That script runs four steps: creates the `nvidia-build` provider (picks up `NVIDIA_API_KEY` from your env), creates the `ran-drift-demo` sandbox from `--from openclaw` and uploads the workdir, applies the policy YAML, and routes inference through the provider.
 
-```text
-http://localhost:5173
-```
-
-Run tests and production build in a container:
-
-```bash
-sh scripts/docker-test.sh
-```
-
-## Sandbox Development
-
-Run these commands from inside the Brev/NemoClaw sandbox:
+### 4. Run the demo
 
 ```bash
 npm install
 npm run dev
 ```
 
-Useful checks:
+That starts the host-side bridge and the Vite UI. Open `http://localhost:5173`.
+
+The Diagnostics drawer in the UI tells you whether the bridge is in **sandbox mode** (real OpenShell enforcement) or **dev mode** (runner spawned directly on the host). Dev mode lets you iterate on the UI / runner without bootstrapping; sandbox mode is what the customer sees.
+
+## Without OpenShell installed
+
+The bridge will still run. It detects the missing CLI and falls back to spawning the runner directly on the host. UI events are flagged `mode: "dev"` so it's clear the OpenShell layer isn't actually enforcing. Useful for UI iteration and for CI.
+
+## Docker workflow
+
+All package checks run inside a local Docker container (Colima on macOS):
 
 ```bash
-npm test
-npm run build
+sh scripts/docker-build.sh   # build image
+sh scripts/docker-test.sh    # npm test + npm run build
+sh scripts/docker-dev.sh     # vite dev server only (no bridge)
 ```
 
-The Docker workflow is preferred for local development. The Brev/NemoClaw sandbox remains the target environment for the customer demo.
+For full demo dev (bridge + Vite together) on the host: `npm run dev`.
 
-## Live NemoClaw Mode
+## Verifying inside the sandbox
 
-The app has two layers:
-
-- The browser dashboard at `http://localhost:5173`.
-- A host-side live bridge at `http://localhost:8787` that calls NemoClaw/OpenShell commands and streams events to the UI.
-
-Create a local `.env` file:
+You can run the agent runner manually to sanity-check the policy boundary:
 
 ```bash
-cp .env.example .env
+openshell sandbox exec --name ran-drift-demo -- node /workspace/server/agent/runner.mjs --scenario power-drift
 ```
 
-Set `NVIDIA_API_KEY` in `.env`. The key is loaded by the live bridge and NemoClaw onboarding scripts, and `.env` is ignored by Git.
-
-Install and onboard NemoClaw:
-
-```bash
-sh scripts/nemoclaw-install.sh
-sh scripts/nemoclaw-onboard.sh
-```
-
-Run the host-side live bridge:
-
-```bash
-node server/liveBridge.js
-```
-
-In a second terminal, run the browser dashboard in Docker:
-
-```bash
-sh scripts/docker-dev.sh
-```
-
-The UI will show whether `.env`, Docker, NemoClaw, and OpenShell are actually present. Scenario buttons call the live bridge. If your installed NemoClaw/OpenClaw CLI exposes a different non-interactive agent command, set `NEMOCLAW_AGENT_CMD` in `.env` and include `{prompt}` where the generated RAN prompt should go.
+Stdout is NDJSON `AgentEvent` lines — what the bridge relays as SSE.
 
 ## Project Tracking
 
-- [docs/PRD.md](docs/PRD.md) defines the product intent and acceptance criteria.
-- [TASKS.md](TASKS.md) is the source-of-truth implementation tracker until GitHub Issues are available.
-- [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md) contains the customer walkthrough.
+- [docs/PRD.md](docs/PRD.md) — product intent and acceptance criteria.
+- [TASKS.md](TASKS.md) — implementation tracker.
+- [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md) — customer walkthrough.
+- [policies/ran-drift-demo.yaml](policies/ran-drift-demo.yaml) — the OpenShell policy that enforces the sandbox boundary.
 
-## GitHub Status
+## Repo Layout
 
-This local workspace does not currently have a GitHub remote, GitHub CLI, or installed GitHub connector account. After a repository is created and connected, the task board epics should be mirrored into GitHub Issues and the planned `codex/*` branches should be opened as draft PRs.
+```
+data/
+  fixtures.json         single source of truth for scenarios (UI + bridge both read this)
+policies/
+  ran-drift-demo.yaml   OpenShell policy YAML
+scripts/
+  openshell-install.sh  install OpenShell
+  openshell-bootstrap.sh  create provider + sandbox + policy + inference route
+  openshell/*.js        in-sandbox CLI tools (inspect, validate, sim-inventory, apply-change)
+server/
+  liveBridge.js         host-side HTTP/SSE bridge
+  events.js             SSE pub/sub
+  agent/
+    runner.mjs          in-sandbox runner (NDJSON over stdout)
+    tools.mjs           9-tool surface (5 OpenShell-routed, 4 pure)
+    scripts.mjs         per-scenario tool sequences (PR 2a scripted mode)
+    policy.js           validator (mirror of src/policy/validator.ts)
+  data/fixtures.js      bridge-side JSON loader
+src/
+  App.tsx               Calm Enterprise UI
+  policy/validator.ts   deterministic Policy Engine (TS source of truth)
+  simulator/useScenarioRunner.ts  in-browser scripted fallback
+```

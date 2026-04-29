@@ -90,3 +90,36 @@ export type QueueItem = {
   verdict: Decision;
   scenario?: ScenarioId;
 };
+
+export type AuditEntry = {
+  t: string;
+  actor: string;
+  summary: string;
+};
+
+export type AgentEvent =
+  | { kind: "run.started"; runId: string; scenarioId: ScenarioId; t: string }
+  | { kind: "timeline"; runId: string; event: TimelineEvent }
+  | { kind: "shell"; runId: string; command: ShellCommand }
+  | { kind: "rag"; runId: string; chunk: RagChunk }
+  | { kind: "policy"; runId: string; rule: PolicyRule }
+  | {
+      kind: "policy.proposal";
+      runId: string;
+      decision: Decision;
+      rationale: string;
+      t: string;
+    }
+  | {
+      kind: "policy.verdict";
+      runId: string;
+      decision: Decision;
+      proposed: Decision;
+      overrode: boolean;
+      risk: number;
+      t: string;
+    }
+  | { kind: "audit"; runId: string; entry: AuditEntry }
+  | { kind: "recommendation"; runId: string; text: string; t: string }
+  | { kind: "run.complete"; runId: string; verdict: Decision; t: string }
+  | { kind: "run.error"; runId: string; message: string; t: string };
