@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { queueItems, scenarios } from "../data/fixtures";
+import { validate } from "../policy/validator";
 import type { Decision, Scenario, ScenarioId } from "../types";
 
 export type ScenarioRunner = {
@@ -80,7 +81,7 @@ export function useScenarioRunner(
     setShellIdx(scenario.openshell.length);
   }, [scenarioId, scenario.timeline.length, scenario.openshell.length]);
 
-  const decision = forcedVerdict ?? scenario.decision;
+  const decision = forcedVerdict ?? validate(scenario.rules);
 
   return {
     scenarios,
