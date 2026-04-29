@@ -1,100 +1,89 @@
-export type Vendor = "Ericsson" | "Nokia" | "Samsung";
-export type Band = "n78" | "n41" | "n258" | "LTE-B66";
-export type SiteCriticality = "standard" | "critical" | "emergency-services";
-export type Decision = "allow" | "deny" | "approval-required";
 export type ScenarioId =
-  | "safe-neighbor-update"
-  | "n78-power-drift"
-  | "emergency-approval"
-  | "denied-oss-lookup"
-  | "missing-rollback";
+  | "safe-update"
+  | "power-drift"
+  | "emergency"
+  | "oss-lookup"
+  | "no-rollback";
 
-export type RanSite = {
+export type Severity = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+export type Decision = "Allowed" | "Denied" | "Approval";
+export type RuleVerdict = "pass" | "fail" | "skip" | "pending";
+export type ShellStatus = "ok" | "warn" | "denied";
+export type DiffOp = "+" | "−" | "~" | "?";
+
+export type Tone = "good" | "warn" | "bad" | "muted";
+
+export type DiffEntry = {
+  op: DiffOp;
+  path: string;
+  value: string;
+};
+
+export type PolicyRule = {
   id: string;
   name: string;
-  region: string;
-  market: string;
-  vendor: Vendor;
-  band: Band;
-  criticality: SiteCriticality;
-  coordinates: {
-    x: number;
-    y: number;
-  };
-};
-
-export type ConfigChange = {
-  id: string;
-  scenarioId: ScenarioId;
-  title: string;
-  siteId: string;
-  source: "PR" | "change-queue" | "staging-feed";
-  parameter: string;
-  before: string | number | boolean | null;
-  after: string | number | boolean | null;
-  timestamp: string;
-  requestedBy: string;
-  rollbackPlan: boolean;
-};
-
-export type PolicyDecision = {
-  id: string;
-  action: string;
-  decision: Decision;
-  reason: string;
-  policyName: string;
-};
-
-export type AgentEvent = {
-  id: string;
-  changeId: string;
-  kind: "monitor" | "rag" | "policy" | "shell" | "test" | "recommendation";
-  status: "running" | "passed" | "blocked" | "needs-approval";
-  message: string;
-  timestamp: string;
-};
-
-export type RagEvidence = {
-  id: string;
-  title: string;
-  source: string;
-  excerpt: string;
-  confidence: number;
-  appliesTo: ScenarioId[];
+  verdict: RuleVerdict;
+  input: string;
 };
 
 export type ShellCommand = {
-  id: string;
-  command: string;
-  status: "allowed" | "blocked" | "approval-required";
-  output: string;
+  cmd: string;
+  dur: number;
+  status: ShellStatus;
+  code: number;
+  out: string;
 };
 
-export type AuditEntry = {
+export type TimelineKind =
+  | "monitor"
+  | "rag"
+  | "policy"
+  | "tests"
+  | "guard"
+  | "decision"
+  | "audit";
+
+export type TimelineEvent = {
+  t: string;
+  kind: TimelineKind;
+  text: string;
+};
+
+export type RagConsumer = "rag" | "policy";
+
+export type RagChunk = {
   id: string;
-  timestamp: string;
-  actor: "NemoClaw" | "Policy Engine" | "OpenShell" | "RAG";
-  summary: string;
+  section: string;
+  sim: number;
+  used: ReadonlyArray<RagConsumer>;
+  body: string;
+  highlight: string;
 };
 
 export type Scenario = {
   id: ScenarioId;
-  label: string;
-  shortLabel: string;
-  risk: "low" | "medium" | "high" | "critical";
-  description: string;
-  change: ConfigChange;
+  title: string;
+  short: string;
+  severity: Severity;
+  chg: string;
+  site: string;
+  vendor: string;
+  band: string;
+  region: string;
+  summary: string;
+  risk: number;
+  decision: Decision;
+  diff: DiffEntry[];
+  rules: PolicyRule[];
+  openshell: ShellCommand[];
+  timeline: TimelineEvent[];
+  rag: RagChunk[];
 };
 
-export type Evaluation = {
-  scenario: Scenario;
-  site: RanSite;
-  finalDecision: Decision;
-  riskScore: number;
-  decisions: PolicyDecision[];
-  events: AgentEvent[];
-  evidence: RagEvidence[];
-  commands: ShellCommand[];
-  audit: AuditEntry[];
-  remediation: string;
+export type QueueItem = {
+  id: string;
+  title: string;
+  meta: string;
+  verdict: Decision;
+  scenario?: ScenarioId;
 };
