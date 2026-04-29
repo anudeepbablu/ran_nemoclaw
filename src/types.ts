@@ -19,11 +19,14 @@ export type DiffEntry = {
   value: string;
 };
 
+export type FailMode = "deny" | "approve";
+
 export type PolicyRule = {
   id: string;
   name: string;
   verdict: RuleVerdict;
   input: string;
+  onFail?: FailMode;
 };
 
 export type ShellCommand = {
