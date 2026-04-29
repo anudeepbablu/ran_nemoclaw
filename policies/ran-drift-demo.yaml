@@ -1,0 +1,89 @@
+# OpenShell policy for the RAN Drift Guard demo sandbox.
+#
+# Applied with:
+#   openshell policy set ran-drift-demo --policy policies/ran-drift-demo.yaml --wait
+#
+# Encoded boundaries (matches the in-app "Sandbox Boundary" panel):
+#   - host filesystem  : scoped (workdir mounted, OS read-only, /tmp + /sandbox writable)
+#   - internal RAG     : allowed (data/fixtures.json under workdir)
+#   - unit tests       : allowed (scripts/openshell/*.js, vitest)
+#   - vendor fetch     : approval-required (no allow rule by default; operator must update policy)
+#   - production OSS   : denied (prod-oss.internal not in any allow rule)
+#   - secrets / PII    : denied (process runs as unprivileged sandbox user, no host secret mounts)
+#
+# OpenShell's inference router is configured separately via:
+#   openshell inference set --provider nvidia-build --model nvidia/nemotron-...
+# which provisions the inference.local endpoint the agent calls.
+
+version: 1
+
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /app
+    - /etc
+    - /var/log
+  read_write:
+    - /sandbox
+    - /tmp
+    - /dev/null
+
+landlock:
+  compatibility: best_effort
+
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox
+
+network_policies:
+  # Allow the agent to reach OpenShell's local inference proxy. The proxy
+  # injects NVIDIA credentials and forwards to the configured backend; the
+  # agent never sees the API key.
+  inference_proxy:
+    name: openshell-inference
+    endpoints:
+      - host: inference.local
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - { path: /usr/bin/node }
+
+  # NVIDIA build platform — direct fallback if inference routing is bypassed.
+  # Kept narrow: only the chat/completions and embeddings endpoints, only via node.
+  nvidia_build:
+    name: nvidia-build-readonly
+    endpoints:
+      - host: integrate.api.nvidia.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-write
+    binaries:
+      - { path: /usr/bin/node }
+
+  # Simulated internal RAG service — placeholder for a future managed RAG
+  # endpoint. The PR 2a scripted runner reads RAG content directly from
+  # mounted fixtures (data/fixtures.json), so this rule is unused today but
+  # stays here so the policy intent is visible.
+  internal_rag:
+    name: internal-rag-readonly
+    endpoints:
+      - host: rag.internal
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+    binaries:
+      - { path: /usr/bin/node }
+      - { path: /usr/bin/curl }
+
+  # NOTE: no rule for prod-oss.internal, *.nms.*, or vendor.example.com.
+  # Attempts to reach those hosts hit the proxy with no matching policy and
+  # are denied by default. The OSS-lookup and emergency scenarios depend on
+  # this default-deny behaviour.
