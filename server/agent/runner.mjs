@@ -5,36 +5,49 @@
 // stdout. The host-side bridge spawns this via `openshell sandbox exec`
 // and relays each line as an SSE event to the browser.
 //
-// PR 2a: scripted dispatch from server/agent/scripts.mjs.
-// PR 2b: switches to server/agent/agent-loop.mjs (Nemotron tool-calling)
-//        when OpenShell inference is configured.
+// Modes:
+//   --mode scripted   deterministic dispatch from server/agent/scripts.mjs
+//   --mode llm        Nemotron tool-calling loop via server/agent/agent-loop.mjs
+//   --mode auto       (default) llm if NVIDIA_API_KEY is set, else scripted
+//
+// LLM mode requires either OpenShell's inference proxy (inside the sandbox,
+// where credentials are injected by the gateway) or a direct
+// integrate.api.nvidia.com base URL plus NVIDIA_API_KEY in env.
 
+import { runLLM } from "./agent-loop.mjs";
 import { scenarios } from "../data/fixtures.js";
 import { scripts } from "./scripts.mjs";
 import { toolRegistry } from "./tools.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const scenarioId = args.scenario || args.s;
-if (!scenarioId) {
-  fatal("missing --scenario <id>");
+const requestedMode = args.mode || "auto";
+
+if (!scenarioId) fatal("missing --scenario <id>");
+if (!["scripted", "llm", "auto"].includes(requestedMode)) {
+  fatal(`invalid --mode: ${requestedMode} (expected scripted | llm | auto)`);
 }
 
 const scenario = scenarios.find((s) => s.id === scenarioId);
-if (!scenario) {
-  fatal(`unknown scenario: ${scenarioId}`);
-}
+if (!scenario) fatal(`unknown scenario: ${scenarioId}`);
 
-const script = scripts[scenarioId];
-if (!script) {
-  fatal(`no scripted plan for scenario: ${scenarioId}`);
-}
-
+const mode = resolveMode(requestedMode);
 const runId = `run-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
-emit({ kind: "run.started", runId, scenarioId, t: now() });
+emit({ kind: "run.started", runId, scenarioId, mode, t: now() });
 
 try {
-  await runScripted();
+  const verdict =
+    mode === "llm"
+      ? await runLlmMode()
+      : await runScriptedMode();
+
+  emit({
+    kind: "run.complete",
+    runId,
+    verdict: verdict ?? "Denied",
+    t: now()
+  });
 } catch (err) {
   emit({
     kind: "run.error",
@@ -45,20 +58,24 @@ try {
   process.exit(1);
 }
 
-// ─── execution ────────────────────────────────────────────────────────────
+// ─── mode dispatch ────────────────────────────────────────────────────────
 
-async function runScripted() {
+function resolveMode(requested) {
+  if (requested === "scripted" || requested === "llm") return requested;
+  // auto: prefer LLM when an API key is available, else scripted.
+  return process.env.NVIDIA_API_KEY ? "llm" : "scripted";
+}
+
+async function runScriptedMode() {
+  const script = scripts[scenarioId];
+  if (!script) throw new Error(`no scripted plan for ${scenarioId}`);
+
   let lastVerdict = null;
 
   for (const step of script) {
     const tool = toolRegistry[step.tool];
-    if (!tool) {
-      throw new Error(`runner: unknown tool ${step.tool}`);
-    }
+    if (!tool) throw new Error(`runner: unknown tool ${step.tool}`);
 
-    // Some tools need the validator's verdict from a prior step
-    // (e.g. applyChange must see verdict=Allowed). The script can opt in
-    // with `verdictFromContext: true`.
     const args = { ...step.args };
     if (args.verdictFromContext) {
       delete args.verdictFromContext;
@@ -81,13 +98,40 @@ async function runScripted() {
     }
   }
 
-  emit({
-    kind: "run.complete",
-    runId,
-    verdict: lastVerdict ?? "Denied",
-    t: now()
-  });
+  return lastVerdict;
 }
+
+async function runLlmMode() {
+  try {
+    const { verdict, finalized } = await runLLM({
+      scenario,
+      emit,
+      emitForResult
+    });
+    if (!finalized) {
+      emit({
+        kind: "run.warning",
+        runId,
+        message:
+          "LLM run ended without calling finalizeRecommendation; verdict from latest proposal.",
+        t: now()
+      });
+    }
+    return verdict;
+  } catch (err) {
+    // LLM unreachable / auth failure / etc. Surface and fall back to
+    // scripted so the demo doesn't dead-end on a flaky network.
+    emit({
+      kind: "run.warning",
+      runId,
+      message: `LLM mode failed (${err instanceof Error ? err.message : String(err)}); falling back to scripted dispatch.`,
+      t: now()
+    });
+    return runScriptedMode();
+  }
+}
+
+// ─── event emission ───────────────────────────────────────────────────────
 
 function emitForResult(toolName, result) {
   if (!result) return;
@@ -111,9 +155,6 @@ function emitForResult(toolName, result) {
   }
 
   if (toolName === "runValidationTests" && result.ok) {
-    // Emit one policy event per rule. The Policy tab in the UI populates
-    // from these. Rules come from the scenario fixture (the validation
-    // CLI returns aggregate counts only).
     for (const rule of scenario.rules) {
       emit({ kind: "policy", runId, rule });
     }
