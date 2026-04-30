@@ -3,10 +3,10 @@ import type { CSSProperties, ReactNode } from "react";
 import { Icon, LiveDot } from "./components/Icon";
 import type { IconName } from "./components/Icon";
 import { tokens as T } from "./lib/tokens";
-import { fmtMs, severityTone, toneColor, useStickyScroll, verdictTone } from "./lib/util";
-import { useScenarioRunner } from "./simulator/useScenarioRunner";
-import type { ScenarioRunner } from "./simulator/useScenarioRunner";
-import type { DiffOp, Tone } from "./types";
+import { fmtMs, severityTone, toneColor, verdictTone } from "./lib/util";
+import { useAgentRun } from "./simulator/useAgentRun";
+import type { AgentRunner } from "./simulator/useAgentRun";
+import type { DiffOp, RunMode, Tone } from "./types";
 
 const liveApiBase = import.meta.env.VITE_LIVE_API_BASE || "http://localhost:8787";
 
@@ -14,11 +14,12 @@ type LiveStatus = {
   envFilePresent: boolean;
   nvidiaApiKeyPresent: boolean;
   sandboxName: string;
-  nemoclawPresent: boolean;
   openshellPresent: boolean;
+  sandboxPresent: boolean;
   dockerReachable: boolean;
-  nemoclawList: string;
+  sandboxList: string;
   liveBridgePort: number;
+  mode: RunMode;
 };
 
 type TabId = "live" | "impact" | "policy" | "shell" | "rag" | "audit";
@@ -26,7 +27,7 @@ type TabId = "live" | "impact" | "policy" | "shell" | "rag" | "audit";
 export default function App() {
   const [tab, setTab] = useState<TabId>("live");
   const [diag, setDiag] = useState(false);
-  const runner = useScenarioRunner("power-drift", 1, true);
+  const runner = useAgentRun("power-drift");
 
   const tabContent: Record<TabId, ReactNode> = {
     live: <Live runner={runner} />,
@@ -49,6 +50,7 @@ export default function App() {
     >
       <Sidebar runner={runner} onOpenDiag={() => setDiag(true)} />
       <main style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+        <BridgeBanner runner={runner} />
         <header
           style={{
             display: "flex",
@@ -89,6 +91,31 @@ export default function App() {
         </div>
       </main>
       <Diagnostics open={diag} onClose={() => setDiag(false)} />
+    </div>
+  );
+}
+
+function BridgeBanner({ runner }: { runner: AgentRunner }) {
+  if (runner.bridgeStatus === "connected") return null;
+  const message =
+    runner.bridgeStatus === "error"
+      ? "Bridge offline — showing static fixture data. Start the bridge with npm run dev."
+      : "Connecting to host bridge…";
+  return (
+    <div
+      style={{
+        background: runner.bridgeStatus === "error" ? `${T.bad}1f` : `${T.warn}1f`,
+        borderBottom: `1px solid ${runner.bridgeStatus === "error" ? T.bad : T.warn}`,
+        padding: "8px 28px",
+        fontSize: 12.5,
+        color: runner.bridgeStatus === "error" ? T.bad : T.warn,
+        display: "flex",
+        alignItems: "center",
+        gap: 10
+      }}
+    >
+      <Icon name="pulse" size={12} />
+      {message}
     </div>
   );
 }
@@ -198,7 +225,7 @@ function Sidebar({
   runner,
   onOpenDiag
 }: {
-  runner: ScenarioRunner;
+  runner: AgentRunner;
   onOpenDiag: () => void;
 }) {
   return (
@@ -387,9 +414,25 @@ function Tabs({ tab, setTab }: { tab: TabId; setTab: (id: TabId) => void }) {
   );
 }
 
-function ScenarioHeader({ runner }: { runner: ScenarioRunner }) {
+function ModePill({ mode, source }: { mode: RunMode | null; source: "live" | "static" }) {
+  if (source === "static") {
+    return (
+      <span style={{ fontSize: 11, color: T.faint, letterSpacing: 0.5 }}>idle</span>
+    );
+  }
+  if (mode === "sandbox") {
+    return <Pill tone="good" soft>OpenShell sandbox</Pill>;
+  }
+  if (mode === "dev") {
+    return <Pill tone="warn" soft>dev fallback</Pill>;
+  }
+  return null;
+}
+
+function ScenarioHeader({ runner }: { runner: AgentRunner }) {
   const { scenario, decision } = runner;
   const tone = verdictTone(decision);
+  const buttonLabel = runner.running ? "Running…" : runner.source === "live" ? "Re-run" : "Run";
   return (
     <div style={{ padding: "24px 28px 4px", display: "flex", alignItems: "flex-start", gap: 28, flexWrap: "wrap" }}>
       <div style={{ flex: 1, minWidth: 280 }}>
@@ -400,6 +443,7 @@ function ScenarioHeader({ runner }: { runner: ScenarioRunner }) {
           <span style={{ fontSize: 12, color: T.dim }}>
             {scenario.region} · {scenario.vendor} · {scenario.band}
           </span>
+          <ModePill mode={runner.mode} source={runner.source} />
         </div>
         <h2
           style={{
@@ -415,18 +459,30 @@ function ScenarioHeader({ runner }: { runner: ScenarioRunner }) {
         <p style={{ margin: 0, color: T.dim, fontSize: 14, lineHeight: 1.55, maxWidth: 720 }}>
           {scenario.summary}
         </p>
+        {runner.startError && (
+          <div
+            style={{
+              marginTop: 10,
+              fontSize: 12,
+              color: T.bad,
+              fontFamily: T.mono
+            }}
+          >
+            run failed: {runner.startError}
+          </div>
+        )}
       </div>
       <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
         <StatCard label="Decision" value={decision} tone={tone} />
         <StatCard
           label="Risk"
-          value={`${scenario.risk}`}
+          value={`${runner.risk}`}
           sub="/100"
-          tone={scenario.risk >= 60 ? "bad" : scenario.risk >= 40 ? "warn" : "good"}
+          tone={runner.risk >= 60 ? "bad" : runner.risk >= 40 ? "warn" : "good"}
         />
         <StatCard label="Site" value={scenario.site} mono />
         <button
-          onClick={() => runner.run()}
+          onClick={() => runner.start()}
           disabled={runner.running}
           style={{
             padding: "10px 16px",
@@ -440,10 +496,11 @@ function ScenarioHeader({ runner }: { runner: ScenarioRunner }) {
             fontWeight: 600,
             display: "inline-flex",
             alignItems: "center",
-            gap: 8
+            gap: 8,
+            opacity: runner.running ? 0.7 : 1
           }}
         >
-          <Icon name="play" size={11} /> {runner.running ? "Running…" : "Replay run"}
+          <Icon name="play" size={11} /> {buttonLabel}
         </button>
       </div>
     </div>
@@ -491,10 +548,8 @@ function StatCard({
   );
 }
 
-function Live({ runner }: { runner: ScenarioRunner }) {
-  const { scenario, tlIdx, queue, pulseTick } = runner;
-  const visible = scenario.timeline.slice(0, tlIdx);
-  const tlRef = useStickyScroll<HTMLDivElement>([tlIdx], runner.running);
+function Live({ runner }: { runner: AgentRunner }) {
+  const { timeline, queue, pulseTick } = runner;
   return (
     <div
       style={{
@@ -510,17 +565,24 @@ function Live({ runner }: { runner: ScenarioRunner }) {
         title="What the assistant did"
         right={
           <span
-            style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: T.good }}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              fontSize: 12,
+              color: runner.running ? T.good : T.dim
+            }}
           >
-            <LiveDot color={T.good} size={6} /> live
+            {runner.running && <LiveDot color={T.good} size={6} />}
+            {runner.running ? "live" : runner.source === "live" ? "complete" : "idle"}
           </span>
         }
         pad={0}
       >
-        <div ref={tlRef} style={{ padding: "10px 22px 22px" }}>
-          {visible.map((e, i) => (
+        <div style={{ padding: "10px 22px 22px" }}>
+          {timeline.map((e, i) => (
             <div
-              key={i}
+              key={`${e.t}-${i}`}
               style={{ display: "grid", gridTemplateColumns: "20px 1fr", gap: 14, paddingTop: 14 }}
             >
               <div style={{ position: "relative" }}>
@@ -535,7 +597,7 @@ function Live({ runner }: { runner: ScenarioRunner }) {
                     background: T.accent
                   }}
                 />
-                {i < visible.length - 1 && (
+                {i < timeline.length - 1 && (
                   <div
                     style={{
                       position: "absolute",
@@ -574,9 +636,9 @@ function Live({ runner }: { runner: ScenarioRunner }) {
               </div>
             </div>
           ))}
-          {visible.length === 0 && (
+          {timeline.length === 0 && (
             <div style={{ color: T.faint, fontSize: 13, padding: 12 }}>
-              Press <span style={{ color: T.accent }}>Replay run</span> to step through the agent run.
+              Press <span style={{ color: T.accent }}>Run</span> to start an agent run through OpenShell.
             </div>
           )}
         </div>
@@ -626,7 +688,7 @@ function Live({ runner }: { runner: ScenarioRunner }) {
   );
 }
 
-function Impact({ runner }: { runner: ScenarioRunner }) {
+function Impact({ runner }: { runner: AgentRunner }) {
   const { scenario } = runner;
   const opLabel = (op: DiffOp): string =>
     op === "+" ? "add" : op === "−" ? "remove" : op === "~" ? "change" : "query";
@@ -735,121 +797,172 @@ function Impact({ runner }: { runner: ScenarioRunner }) {
   );
 }
 
-function Policy({ runner }: { runner: ScenarioRunner }) {
-  const { scenario, decision } = runner;
-  const counts = {
-    pass: scenario.rules.filter((r) => r.verdict === "pass").length,
-    fail: scenario.rules.filter((r) => r.verdict === "fail").length,
-    skip: scenario.rules.filter((r) => r.verdict === "skip").length,
-    pending: scenario.rules.filter((r) => r.verdict === "pending").length
-  };
+function OverrideBanner({ runner }: { runner: AgentRunner }) {
+  if (!runner.overrode || !runner.proposed) return null;
   return (
-    <Panel
-      eyebrow="Policy engine"
-      title="Rules evaluated against this change"
-      right={
-        <span style={{ display: "flex", gap: 10, fontSize: 12, color: T.dim }}>
-          <span style={{ color: T.good }}>{counts.pass} pass</span>
-          <span style={{ color: T.bad }}>{counts.fail} fail</span>
-          <span>{counts.skip} skip</span>
-          {counts.pending > 0 && <span style={{ color: T.warn }}>{counts.pending} pending</span>}
-        </span>
-      }
+    <div
+      style={{
+        padding: "14px 18px",
+        borderRadius: 10,
+        background: `${T.warn}15`,
+        border: `1px solid ${T.warn}66`,
+        marginBottom: 18,
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        flexWrap: "wrap"
+      }}
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {scenario.rules.map((r) => {
-          const tone = verdictTone(r.verdict);
-          const c = toneColor(tone);
-          return (
-            <div
-              key={r.id}
-              style={{
-                display: "grid",
-                gridTemplateColumns: "88px 1fr 110px",
-                gap: 16,
-                alignItems: "flex-start",
-                padding: "14px 16px",
-                borderRadius: 6,
-                background: T.bg2,
-                border: `1px solid ${T.border}`,
-                borderLeft: `3px solid ${c}`
-              }}
-            >
-              <span
-                style={{
-                  fontFamily: T.mono,
-                  fontSize: 12,
-                  color: T.dim,
-                  paddingTop: 2
-                }}
-              >
-                {r.id}
-              </span>
-              <div>
-                <div style={{ fontSize: 14, color: T.text, marginBottom: 4 }}>{r.name}</div>
-                <div
-                  style={{
-                    fontSize: 12.5,
-                    color: T.dim,
-                    fontFamily: T.mono,
-                    lineHeight: 1.5
-                  }}
-                >
-                  {r.input}
-                </div>
-              </div>
-              <Pill tone={tone}>{r.verdict}</Pill>
-            </div>
-          );
-        })}
+      <Icon name="shield" size={16} />
+      <div style={{ flex: 1, minWidth: 240 }}>
+        <div style={{ fontSize: 13, color: T.warn, fontWeight: 600, letterSpacing: 0.3 }}>
+          Policy Engine overrode the LLM
+        </div>
+        <div style={{ fontSize: 12.5, color: T.text, marginTop: 4 }}>
+          Agent proposed{" "}
+          <span style={{ fontFamily: T.mono, color: toneColor(verdictTone(runner.proposed)) }}>
+            {runner.proposed}
+          </span>
+          ; deterministic validator returned{" "}
+          <span style={{ fontFamily: T.mono, color: toneColor(verdictTone(runner.decision)) }}>
+            {runner.decision}
+          </span>
+          . The validator's verdict is authoritative.
+        </div>
+        {runner.proposedRationale && (
+          <div
+            style={{
+              fontSize: 12,
+              color: T.dim,
+              marginTop: 6,
+              fontStyle: "italic"
+            }}
+          >
+            agent rationale: {runner.proposedRationale}
+          </div>
+        )}
       </div>
-      <div
-        style={{
-          marginTop: 18,
-          padding: 18,
-          borderRadius: 10,
-          background: T.panel2,
-          border: `1px solid ${T.borderHi}`,
-          display: "flex",
-          alignItems: "center",
-          gap: 18,
-          flexWrap: "wrap"
-        }}
-      >
-        <span style={{ color: T.dim, fontSize: 12 }}>Engine output</span>
-        <Pill tone={verdictTone(decision)}>{decision}</Pill>
-        <span style={{ fontSize: 13, color: T.dim }}>risk score</span>
-        <span
-          style={{
-            fontFamily: T.mono,
-            fontSize: 16,
-            fontWeight: 600,
-            color: scenario.risk >= 60 ? T.bad : scenario.risk >= 40 ? T.warn : T.good
-          }}
-        >
-          {scenario.risk}/100
-        </span>
-      </div>
-    </Panel>
+    </div>
   );
 }
 
-function Shell({ runner }: { runner: ScenarioRunner }) {
-  const { scenario, shellIdx } = runner;
+function Policy({ runner }: { runner: AgentRunner }) {
+  const { policy, decision, risk } = runner;
+  const counts = {
+    pass: policy.filter((r) => r.verdict === "pass").length,
+    fail: policy.filter((r) => r.verdict === "fail").length,
+    skip: policy.filter((r) => r.verdict === "skip").length,
+    pending: policy.filter((r) => r.verdict === "pending").length
+  };
+  return (
+    <>
+      <OverrideBanner runner={runner} />
+      <Panel
+        eyebrow="Policy engine"
+        title="Rules evaluated against this change"
+        right={
+          <span style={{ display: "flex", gap: 10, fontSize: 12, color: T.dim }}>
+            <span style={{ color: T.good }}>{counts.pass} pass</span>
+            <span style={{ color: T.bad }}>{counts.fail} fail</span>
+            <span>{counts.skip} skip</span>
+            {counts.pending > 0 && <span style={{ color: T.warn }}>{counts.pending} pending</span>}
+          </span>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {policy.map((r) => {
+            const tone = verdictTone(r.verdict);
+            const c = toneColor(tone);
+            return (
+              <div
+                key={r.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "88px 1fr 110px",
+                  gap: 16,
+                  alignItems: "flex-start",
+                  padding: "14px 16px",
+                  borderRadius: 6,
+                  background: T.bg2,
+                  border: `1px solid ${T.border}`,
+                  borderLeft: `3px solid ${c}`
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: T.mono,
+                    fontSize: 12,
+                    color: T.dim,
+                    paddingTop: 2
+                  }}
+                >
+                  {r.id}
+                </span>
+                <div>
+                  <div style={{ fontSize: 14, color: T.text, marginBottom: 4 }}>{r.name}</div>
+                  <div
+                    style={{
+                      fontSize: 12.5,
+                      color: T.dim,
+                      fontFamily: T.mono,
+                      lineHeight: 1.5
+                    }}
+                  >
+                    {r.input}
+                  </div>
+                </div>
+                <Pill tone={tone}>{r.verdict}</Pill>
+              </div>
+            );
+          })}
+        </div>
+        <div
+          style={{
+            marginTop: 18,
+            padding: 18,
+            borderRadius: 10,
+            background: T.panel2,
+            border: `1px solid ${T.borderHi}`,
+            display: "flex",
+            alignItems: "center",
+            gap: 18,
+            flexWrap: "wrap"
+          }}
+        >
+          <span style={{ color: T.dim, fontSize: 12 }}>Engine output</span>
+          <Pill tone={verdictTone(decision)}>{decision}</Pill>
+          <span style={{ fontSize: 13, color: T.dim }}>risk score</span>
+          <span
+            style={{
+              fontFamily: T.mono,
+              fontSize: 16,
+              fontWeight: 600,
+              color: risk >= 60 ? T.bad : risk >= 40 ? T.warn : T.good
+            }}
+          >
+            {risk}/100
+          </span>
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+function Shell({ runner }: { runner: AgentRunner }) {
+  const { shell } = runner;
   const [open, setOpen] = useState<Record<number, boolean>>({});
-  const visible = scenario.openshell.slice(0, shellIdx);
   return (
     <Panel
       eyebrow="OpenShell"
       title="Commands the agent ran in the sandbox"
       right={
         <span style={{ fontSize: 12, color: T.dim }}>
-          {visible.length}/{scenario.openshell.length}
+          {shell.length} command{shell.length === 1 ? "" : "s"}
         </span>
       }
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {visible.map((c, i) => {
+        {shell.map((c, i) => {
           const tone: Tone = c.status === "denied" ? "bad" : c.status === "warn" ? "warn" : "good";
           const isOpen = !!open[i];
           const rowStyle: CSSProperties = {
@@ -929,6 +1042,11 @@ function Shell({ runner }: { runner: ScenarioRunner }) {
             </div>
           );
         })}
+        {shell.length === 0 && (
+          <div style={{ color: T.faint, fontSize: 13, padding: 12 }}>
+            No commands executed yet. Press <span style={{ color: T.accent }}>Run</span> to start.
+          </div>
+        )}
       </div>
       <div
         style={{
@@ -942,20 +1060,29 @@ function Shell({ runner }: { runner: ScenarioRunner }) {
         }}
       >
         <div style={{ marginBottom: 4, color: T.text, fontWeight: 500 }}>
-          Command allowlist enforced by OpenShell
+          OpenShell network policy (policies/ran-drift-demo.yaml)
         </div>
-        <span style={{ color: T.good }}>nemoclaw, rag.*, policy.*, simulate.*, audit.*, sandbox.*</span>
-        <span style={{ color: T.faint }}> · blocked: </span>
-        <span style={{ color: T.bad }}>oss.*write, nms.*, ssh, curl, exec</span>
+        <span style={{ color: T.good }}>allow: inference.local, integrate.api.nvidia.com, rag.internal</span>
+        <span style={{ color: T.faint }}> · </span>
+        <span style={{ color: T.bad }}>default-deny: prod-oss.internal, *.nms.*, vendor.example.com</span>
       </div>
     </Panel>
   );
 }
 
-function Rag({ runner }: { runner: ScenarioRunner }) {
-  const { scenario } = runner;
+function Rag({ runner }: { runner: AgentRunner }) {
+  const { rag } = runner;
   const [sel, setSel] = useState(0);
-  const cur = scenario.rag[sel] ?? scenario.rag[0];
+  const cur = rag[sel] ?? rag[0];
+  if (!cur) {
+    return (
+      <Panel eyebrow="Citations" title="Internal RAG matches">
+        <div style={{ color: T.faint, fontSize: 13, padding: 12 }}>
+          No evidence retrieved yet. Press <span style={{ color: T.accent }}>Run</span> to start.
+        </div>
+      </Panel>
+    );
+  }
   const parts = cur.body.split(cur.highlight);
   return (
     <div
@@ -969,11 +1096,11 @@ function Rag({ runner }: { runner: ScenarioRunner }) {
     >
       <Panel eyebrow="Citations" title="Internal RAG matches" pad={10}>
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-          {scenario.rag.map((c, i) => {
+          {rag.map((c, i) => {
             const active = i === sel;
             return (
               <button
-                key={i}
+                key={`${c.id}-${i}`}
                 onClick={() => setSel(i)}
                 style={{
                   textAlign: "left",
@@ -1059,44 +1186,15 @@ function Rag({ runner }: { runner: ScenarioRunner }) {
   );
 }
 
-function Audit({ runner }: { runner: ScenarioRunner }) {
-  const { scenario, decision } = runner;
-  const events = [
-    { t: scenario.timeline[0]?.t, label: "change.detected", detail: `${scenario.chg} entered staging queue` },
-    { t: scenario.timeline[1]?.t, label: "rag.retrieved", detail: `${scenario.rag.length} internal chunks` },
-    {
-      t: scenario.timeline[2]?.t,
-      label: "policy.evaluated",
-      detail: `${scenario.rules.length} rules · risk ${scenario.risk}/100`
-    },
-    {
-      t: scenario.timeline.find((e) => e.kind === "tests")?.t || scenario.timeline[3]?.t,
-      label: "simulation.run",
-      detail: "sandbox cluster"
-    },
-    {
-      t: scenario.timeline.find((e) => e.kind === "guard")?.t,
-      label: "guard.enforced",
-      detail: "sandbox boundary held"
-    },
-    {
-      t: scenario.timeline.find((e) => e.kind === "decision")?.t,
-      label: "decision.signed",
-      detail: `verdict = ${decision}`
-    },
-    {
-      t: scenario.timeline.find((e) => e.kind === "audit")?.t,
-      label: "audit.written",
-      detail: `audit/${scenario.chg.toLowerCase()}.json`
-    }
-  ].filter((e) => e.t);
+function Audit({ runner }: { runner: AgentRunner }) {
+  const { audit, scenario, decision, risk, recommendation } = runner;
   const auditJson = `{
   "change": "${scenario.chg}",
   "site": "${scenario.site}",
   "verdict": "${decision}",
-  "risk": ${scenario.risk},
-  "rules": ${scenario.rules.length},
-  "rag_chunks": ${scenario.rag.length},
+  "risk": ${risk},
+  "rules": ${runner.policy.length},
+  "rag_chunks": ${runner.rag.length},
   "signed_by": "sandbox-key/3f:a1:c2:..."
 }`;
   return (
@@ -1110,7 +1208,7 @@ function Audit({ runner }: { runner: ScenarioRunner }) {
       }
     >
       <div style={{ position: "relative" }}>
-        {events.map((e, i) => (
+        {audit.map((e, i) => (
           <div
             key={i}
             style={{
@@ -1134,7 +1232,7 @@ function Audit({ runner }: { runner: ScenarioRunner }) {
                   background: T.accent
                 }}
               />
-              {i < events.length - 1 && (
+              {i < audit.length - 1 && (
                 <div
                   style={{
                     position: "absolute",
@@ -1148,12 +1246,33 @@ function Audit({ runner }: { runner: ScenarioRunner }) {
               )}
             </div>
             <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ fontFamily: T.mono, fontSize: 13, color: T.accent }}>{e.label}</span>
-              <span style={{ fontSize: 13.5, color: T.text }}>{e.detail}</span>
+              <span style={{ fontFamily: T.mono, fontSize: 13, color: T.accent }}>{e.actor}</span>
+              <span style={{ fontSize: 13.5, color: T.text }}>{e.summary}</span>
             </div>
           </div>
         ))}
+        {audit.length === 0 && (
+          <div style={{ color: T.faint, fontSize: 13, padding: 12 }}>
+            No audit entries yet.
+          </div>
+        )}
       </div>
+      {recommendation && (
+        <div
+          style={{
+            marginTop: 18,
+            padding: 16,
+            borderRadius: 10,
+            background: T.panel2,
+            border: `1px solid ${T.borderHi}`
+          }}
+        >
+          <div style={{ fontSize: 11, color: T.dim, letterSpacing: 0.6, textTransform: "uppercase", marginBottom: 6 }}>
+            Recommendation
+          </div>
+          <div style={{ fontSize: 14, color: T.text, lineHeight: 1.6 }}>{recommendation}</div>
+        </div>
+      )}
       <div
         style={{
           marginTop: 20,
@@ -1211,9 +1330,9 @@ function Diagnostics({ open, onClose }: { open: boolean; onClose: () => void }) 
         [".env", "—", "muted"],
         ["NVIDIA key", "—", "muted"],
         ["Docker", "—", "muted"],
-        ["NemoClaw", "—", "muted"],
         ["OpenShell", "—", "muted"],
-        ["Sandbox", "—", "muted"]
+        ["Sandbox", "—", "muted"],
+        ["Mode", "—", "muted"]
       ];
     }
     return [
@@ -1224,9 +1343,9 @@ function Diagnostics({ open, onClose }: { open: boolean; onClose: () => void }) 
         status.nvidiaApiKeyPresent ? "good" : "bad"
       ],
       ["Docker", status.dockerReachable ? "Ready" : "Missing", status.dockerReachable ? "good" : "bad"],
-      ["NemoClaw", status.nemoclawPresent ? "Ready" : "Missing", status.nemoclawPresent ? "good" : "bad"],
-      ["OpenShell", status.openshellPresent ? "Ready" : "Missing", status.openshellPresent ? "good" : "warn"],
-      ["Sandbox", status.sandboxName || "ran-drift-demo", "good"]
+      ["OpenShell CLI", status.openshellPresent ? "Ready" : "Missing", status.openshellPresent ? "good" : "warn"],
+      ["Sandbox", status.sandboxPresent ? status.sandboxName : "Missing", status.sandboxPresent ? "good" : "warn"],
+      ["Mode", status.mode, status.mode === "sandbox" ? "good" : "warn"]
     ];
   }, [status]);
 
@@ -1282,10 +1401,10 @@ function Diagnostics({ open, onClose }: { open: boolean; onClose: () => void }) 
             <Icon name="x" size={12} />
           </button>
         </div>
-        <h3 style={{ margin: "0 0 8px", fontSize: 19, fontWeight: 600 }}>Live NemoClaw runtime</h3>
+        <h3 style={{ margin: "0 0 8px", fontSize: 19, fontWeight: 600 }}>OpenShell runtime</h3>
         <p style={{ margin: "0 0 22px", color: T.dim, fontSize: 13.5, lineHeight: 1.55 }}>
-          Scenario buttons call a host-side bridge that runs NemoClaw / OpenShell commands and streams
-          stdout, stderr, and status events into this UI. In demo mode these are simulated.
+          The host bridge dispatches each scenario into the OpenShell sandbox via{" "}
+          <code style={{ fontFamily: T.mono }}>openshell sandbox exec</code>. In dev mode the runner spawns directly on the host and the OpenShell layer is not enforcing.
         </p>
         {error && (
           <p style={{ color: T.bad, fontSize: 13, marginBottom: 14 }}>
