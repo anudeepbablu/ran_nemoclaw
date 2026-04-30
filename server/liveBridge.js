@@ -20,6 +20,8 @@ import { createServer } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { emitDeterministicFallback } from "./agent/agent-loop.mjs";
+import { getScenario } from "./data/fixtures.js";
 import { publish, subscribe } from "./events.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -31,8 +33,14 @@ const sandboxName =
   env.OPENSHELL_SANDBOX_NAME ||
   process.env.OPENSHELL_SANDBOX_NAME ||
   "ran-drift-demo";
+const RUN_TIMEOUT_MS = Number(
+  env.RUN_TIMEOUT_MS || process.env.RUN_TIMEOUT_MS || 90_000
+);
 
-let activeRun = null; // { child, runId } — at most one run at a time
+// activeRun tracks the in-flight child + the run's progress. Events the
+// runner emits update hasVerdict/hasComplete so the watchdog knows what
+// to synthesize on timeout.
+let activeRun = null;
 
 // ─── env loader ──────────────────────────────────────────────────────────
 
@@ -158,7 +166,32 @@ async function startRun(scenarioId) {
   }
 
   const runId = `dispatch-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  activeRun = { child, runId };
+  const state = {
+    child,
+    runId,
+    scenarioId,
+    hasVerdict: false,
+    hasRecommendation: false,
+    hasComplete: false,
+    timedOut: false,
+    watchdog: null
+  };
+  activeRun = state;
+
+  // Watchdog: kill the child and synthesize whichever events haven't been
+  // emitted yet. The Policy Engine becomes the demo's last line of defense.
+  state.watchdog = setTimeout(() => {
+    if (state.hasComplete) return;
+    state.timedOut = true;
+    const reason = `Run exceeded ${RUN_TIMEOUT_MS}ms — Policy Engine fallback`;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      /* child may already be dead */
+    }
+    publish({ kind: "run.warning", runId, message: reason, t: nowHM() });
+    fallback(scenarioId, runId, state, reason);
+  }, RUN_TIMEOUT_MS);
 
   publish({
     kind: "run.dispatched",
@@ -169,13 +202,15 @@ async function startRun(scenarioId) {
     t: nowHM()
   });
 
-  // stdout: parse NDJSON line-by-line, forward each as an SSE event.
+  // stdout: parse NDJSON line-by-line, forward each as an SSE event and
+  // update the run's progress flags so the watchdog knows what's pending.
   const out = createInterface({ input: child.stdout });
   out.on("line", (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     try {
       const event = JSON.parse(trimmed);
+      trackProgress(state, event);
       publish(event);
     } catch (err) {
       publish({
@@ -198,6 +233,11 @@ async function startRun(scenarioId) {
   });
 
   child.on("close", (code) => {
+    if (state.watchdog) clearTimeout(state.watchdog);
+    if (!state.hasComplete && !state.timedOut) {
+      const reason = `Runner exited (code ${code}) before run.complete — Policy Engine fallback`;
+      fallback(scenarioId, runId, state, reason);
+    }
     publish({
       kind: "run.exit",
       runId,
@@ -208,16 +248,71 @@ async function startRun(scenarioId) {
   });
 
   child.on("error", (err) => {
+    if (state.watchdog) clearTimeout(state.watchdog);
     publish({
       kind: "run.error",
       runId,
       message: err.message,
       t: nowHM()
     });
+    if (!state.hasComplete) {
+      fallback(
+        scenarioId,
+        runId,
+        state,
+        `Runner spawn error (${err.message}) — Policy Engine fallback`
+      );
+    }
     if (activeRun?.child === child) activeRun = null;
   });
 
   return { ok: true, runId, mode: status.mode };
+}
+
+function trackProgress(state, event) {
+  switch (event.kind) {
+    case "policy.verdict":
+      state.hasVerdict = true;
+      break;
+    case "recommendation":
+      state.hasRecommendation = true;
+      break;
+    case "run.complete":
+      state.hasComplete = true;
+      break;
+    default:
+      break;
+  }
+}
+
+// Synthesize whichever events the runner didn't manage to emit. Always
+// ends with run.complete so the UI sees the run finish.
+function fallback(scenarioId, runId, state, reason) {
+  const scenario = getScenario(scenarioId);
+  if (!scenario) {
+    publish({
+      kind: "run.error",
+      runId,
+      message: `${reason} (scenario ${scenarioId} not found)`,
+      t: nowHM()
+    });
+    publish({ kind: "run.complete", runId, verdict: "Denied", t: nowHM() });
+    state.hasComplete = true;
+    return;
+  }
+
+  const verdict = emitDeterministicFallback({
+    scenario,
+    runId,
+    emit: publish,
+    reason,
+    alreadyHasVerdict: state.hasVerdict
+  });
+
+  publish({ kind: "run.complete", runId, verdict, t: nowHM() });
+  state.hasComplete = true;
+  state.hasVerdict = true;
+  state.hasRecommendation = true;
 }
 
 function nowHM() {
