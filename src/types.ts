@@ -97,8 +97,10 @@ export type AuditEntry = {
   summary: string;
 };
 
+export type RunMode = "sandbox" | "dev";
+
 export type AgentEvent =
-  | { kind: "run.started"; runId: string; scenarioId: ScenarioId; t: string }
+  | { kind: "run.started"; runId: string; scenarioId: ScenarioId; mode?: RunMode; t: string }
   | { kind: "timeline"; runId: string; event: TimelineEvent }
   | { kind: "shell"; runId: string; command: ShellCommand }
   | { kind: "rag"; runId: string; chunk: RagChunk }
@@ -123,3 +125,21 @@ export type AgentEvent =
   | { kind: "recommendation"; runId: string; text: string; t: string }
   | { kind: "run.complete"; runId: string; verdict: Decision; t: string }
   | { kind: "run.error"; runId: string; message: string; t: string };
+
+// Events emitted by the host bridge (server/liveBridge.js) — distinct from
+// the agent runner's events. The UI subscribes to /api/events and receives
+// the union.
+export type BridgeEvent =
+  | { kind: "bridge.connected"; t: string }
+  | {
+      kind: "run.dispatched";
+      runId: string;
+      scenarioId: ScenarioId;
+      mode: RunMode;
+      cmd: string;
+      t: string;
+    }
+  | { kind: "run.warning"; runId: string; message: string; t: string }
+  | { kind: "run.exit"; runId: string; code: number; t: string };
+
+export type WireEvent = AgentEvent | BridgeEvent;
