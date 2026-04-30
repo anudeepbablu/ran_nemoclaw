@@ -8,37 +8,64 @@
 // Outside the sandbox (dev mode), the same code can call
 // `https://integrate.api.nvidia.com/v1` directly when NVIDIA_API_KEY is
 // set in the env.
+//
+// Every call has a hard timeout (NEMOTRON_TIMEOUT_MS, default 30s). On
+// abort the client throws a NemotronTimeoutError so agent-loop can fall
+// back to the deterministic Policy Engine without the demo dead-ending.
 
 export const DEFAULT_BASE_URL = "https://inference.local/v1";
 export const DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b";
+export const DEFAULT_TIMEOUT_MS = 30_000;
+
+export class NemotronTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`Nemotron call exceeded ${timeoutMs}ms`);
+    this.name = "NemotronTimeoutError";
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 export function makeClient({ fetchImpl = globalThis.fetch, env = process.env } = {}) {
   const baseUrl = (env.OPENSHELL_INFERENCE_URL || DEFAULT_BASE_URL).replace(/\/+$/, "");
   const model = env.OPENSHELL_INFERENCE_MODEL || DEFAULT_MODEL;
   const apiKey = env.NVIDIA_API_KEY;
+  const timeoutMs = Number(env.NEMOTRON_TIMEOUT_MS || DEFAULT_TIMEOUT_MS);
 
   async function chat({ messages, tools, toolChoice = "auto", temperature = 0.2 }) {
     const headers = { "Content-Type": "application/json" };
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
-    const res = await fetchImpl(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model,
-        messages,
-        tools,
-        tool_choice: toolChoice,
-        temperature
-      })
-    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Nemotron HTTP ${res.status}: ${body.slice(0, 500)}`);
+    try {
+      const res = await fetchImpl(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model,
+          messages,
+          tools,
+          tool_choice: toolChoice,
+          temperature
+        }),
+        signal: controller.signal
+      });
+
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`Nemotron HTTP ${res.status}: ${body.slice(0, 500)}`);
+      }
+      return await res.json();
+    } catch (err) {
+      if (err && (err.name === "AbortError" || err.code === "ABORT_ERR")) {
+        throw new NemotronTimeoutError(timeoutMs);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
     }
-    return res.json();
   }
 
-  return { chat, baseUrl, model };
+  return { chat, baseUrl, model, timeoutMs };
 }

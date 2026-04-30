@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runLLM } from "../agent/agent-loop.mjs";
-import { makeClient } from "../agent/nemotron.mjs";
+import { makeClient, NemotronTimeoutError } from "../agent/nemotron.mjs";
 import { scenarios } from "../data/fixtures.js";
 import { validate } from "../agent/policy.js";
 import { scripts } from "../agent/scripts.mjs";
@@ -202,6 +202,28 @@ describe("server/agent/nemotron.mjs", () => {
     expect(JSON.parse(captured.init.body).model).toBe("test-model");
   });
 
+  it("aborts fetch after timeoutMs and throws NemotronTimeoutError", async () => {
+    // Fake fetch never resolves; only the abort signal can free us.
+    const fakeFetch = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => {
+          const err = new Error("aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    const client = makeClient({
+      fetchImpl: fakeFetch,
+      env: {
+        OPENSHELL_INFERENCE_URL: "https://x/v1",
+        NEMOTRON_TIMEOUT_MS: "30"
+      }
+    });
+    await expect(
+      client.chat({ messages: [], tools: [] })
+    ).rejects.toBeInstanceOf(NemotronTimeoutError);
+  });
+
   it("makeClient omits Authorization when no API key is set", async () => {
     let captured = null;
     const fakeFetch = async (_, init) => {
@@ -279,6 +301,41 @@ describe("server/agent/agent-loop.mjs (LLM mode with mocked Nemotron)", () => {
     expect(propose.overrode).toBe(true); // validator overrode the LLM
     expect(propose.proposed).toBe("Allowed");
     expect(propose.verdict).toBe("Denied");
+  });
+
+  it("falls back to deterministic verdict on Nemotron timeout", async () => {
+    const fakeChat = async () => {
+      throw new NemotronTimeoutError(30_000);
+    };
+    const events = [];
+    const result = await runLLM({
+      scenario: scenarios.find((s) => s.id === "power-drift"),
+      runId: "test-run",
+      emit: (e) => events.push(e),
+      emitForResult: () => {},
+      client: { chat: fakeChat }
+    });
+    expect(result.fallback).toBe("llm-timeout");
+    expect(result.finalized).toBe(true);
+    expect(result.verdict).toBe("Denied");
+
+    const verdict = events.find((e) => e.kind === "policy.verdict");
+    expect(verdict, "policy.verdict event").toBeTruthy();
+    expect(verdict.decision).toBe("Denied");
+    expect(verdict.overrode).toBe(false);
+
+    const recommendation = events.find((e) => e.kind === "recommendation");
+    expect(recommendation.text).toContain("[Policy Engine fallback]");
+
+    const auditFallback = events.find(
+      (e) => e.kind === "audit" && e.entry.summary.startsWith("[fallback]")
+    );
+    expect(auditFallback, "fallback audit entry").toBeTruthy();
+    expect(auditFallback.entry.actor).toBe("Policy Engine");
+
+    // Policy rules should still populate so the Policy tab is meaningful.
+    const rules = events.filter((e) => e.kind === "policy");
+    expect(rules.length).toBeGreaterThan(0);
   });
 
   it("max-iterations halts a runaway loop", async () => {

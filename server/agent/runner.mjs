@@ -103,12 +103,20 @@ async function runScriptedMode() {
 
 async function runLlmMode() {
   try {
-    const { verdict, finalized } = await runLLM({
+    const { verdict, finalized, fallback } = await runLLM({
       scenario,
+      runId,
       emit,
       emitForResult
     });
-    if (!finalized) {
+    if (fallback) {
+      emit({
+        kind: "run.warning",
+        runId,
+        message: `LLM mode hit ${fallback}; Policy Engine returned the verdict.`,
+        t: now()
+      });
+    } else if (!finalized) {
       emit({
         kind: "run.warning",
         runId,

@@ -11,13 +11,15 @@
 // Apply-side guards in tools.mjs prevent a Denied/Approval change from
 // being executed even if the LLM mistakenly tries.
 
-import { makeClient } from "./nemotron.mjs";
+import { makeClient, NemotronTimeoutError } from "./nemotron.mjs";
+import { validate } from "./policy.js";
 import { toolRegistry, toolSchemas } from "./tools.mjs";
 
 const MAX_ITERATIONS = 15;
 
 export async function runLLM({
   scenario,
+  runId = "llm",
   emit,
   emitForResult,
   client = makeClient(),
@@ -32,11 +34,27 @@ export async function runLLM({
   let finalized = false;
 
   for (let iter = 0; iter < maxIterations; iter++) {
-    const response = await client.chat({
-      messages,
-      tools: toolSchemas,
-      toolChoice: "auto"
-    });
+    let response;
+    try {
+      response = await client.chat({
+        messages,
+        tools: toolSchemas,
+        toolChoice: "auto"
+      });
+    } catch (err) {
+      if (err instanceof NemotronTimeoutError) {
+        const reason = `Nemotron timeout after ${err.timeoutMs}ms — Policy Engine fallback`;
+        const verdict = emitDeterministicFallback({
+          scenario,
+          runId,
+          emit,
+          reason,
+          alreadyHasVerdict: lastVerdict !== null
+        });
+        return { verdict, finalized: true, fallback: "llm-timeout" };
+      }
+      throw err;
+    }
 
     const choice = response?.choices?.[0];
     if (!choice) {
@@ -95,6 +113,59 @@ export async function runLLM({
   }
 
   return { verdict: lastVerdict ?? "Denied", finalized };
+}
+
+// Deterministic fallback emitter. Used when the LLM stalls or fails — runs
+// the trusted Policy validator on the scenario's rules, emits the events
+// the UI tabs depend on (policy rules, verdict, audit, recommendation),
+// and returns the verdict. The Policy Engine becomes the demo's last line
+// of defense regardless of upstream failures.
+export function emitDeterministicFallback({
+  scenario,
+  runId,
+  emit,
+  reason,
+  alreadyHasVerdict = false
+}) {
+  const verdict = validate(scenario.rules);
+  const t = nowHM();
+
+  for (const rule of scenario.rules) {
+    emit({ kind: "policy", runId, rule });
+  }
+
+  if (!alreadyHasVerdict) {
+    emit({
+      kind: "policy.verdict",
+      runId,
+      decision: verdict,
+      proposed: verdict,
+      overrode: false,
+      risk: scenario.risk,
+      t
+    });
+  }
+
+  emit({
+    kind: "audit",
+    runId,
+    entry: { t, actor: "Policy Engine", summary: `[fallback] ${reason}` }
+  });
+
+  emit({
+    kind: "recommendation",
+    runId,
+    text: `[Policy Engine fallback] ${reason}. Deterministic verdict from ${scenario.rules.length} rules: ${verdict} (risk ${scenario.risk}/100).`,
+    t
+  });
+
+  return verdict;
+}
+
+function nowHM() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 // ─── prompts ──────────────────────────────────────────────────────────────

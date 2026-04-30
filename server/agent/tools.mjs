@@ -31,35 +31,53 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "..", "..");
 const sims = (name) => join(repoRoot, "scripts", "openshell", name);
 
+const TOOL_TIMEOUT_MS = Number(process.env.OPENSHELL_TOOL_TIMEOUT_MS || 8000);
+
 function nowHM() {
   const d = new Date();
   const pad = (n) => String(n).padStart(2, "0");
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-async function spawnTimed(cmd, args, { allowFailure = false } = {}) {
+// Spawns a child with a hard timeout. On timeout (or any non-zero exit
+// when `allowFailure` is true) returns a structured result instead of
+// throwing. `timedOut` flags the timeout case so callers can render
+// "tool timed out after Xms" in the OpenShell transcript.
+async function spawnTimed(
+  cmd,
+  args,
+  { allowFailure = false, timeoutMs = TOOL_TIMEOUT_MS } = {}
+) {
   const start = Date.now();
   try {
     const { stdout, stderr } = await execFileP(cmd, args, {
-      maxBuffer: 4 * 1024 * 1024
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: timeoutMs,
+      killSignal: "SIGTERM"
     });
     return {
       code: 0,
       stdout: stdout.trim(),
       stderr: stderr.trim(),
-      dur: Date.now() - start
+      dur: Date.now() - start,
+      timedOut: false
     };
   } catch (err) {
+    const dur = Date.now() - start;
+    const timedOut = Boolean(err.killed) && err.signal === "SIGTERM";
     if (!allowFailure) {
-      // Caller wanted success; rethrow with timing for diagnostics.
-      err.dur = Date.now() - start;
+      err.dur = dur;
+      err.timedOut = timedOut;
       throw err;
     }
     return {
-      code: typeof err.code === "number" ? err.code : 1,
+      code: timedOut ? 124 : typeof err.code === "number" ? err.code : 1,
       stdout: (err.stdout || "").trim(),
-      stderr: (err.stderr || err.message || "").trim(),
-      dur: Date.now() - start
+      stderr: timedOut
+        ? `tool timed out after ${timeoutMs}ms`
+        : (err.stderr || err.message || "").trim(),
+      dur,
+      timedOut
     };
   }
 }
