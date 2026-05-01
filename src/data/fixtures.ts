@@ -192,7 +192,7 @@ export const scenarios: Scenario[] = [
     rules: [
       { id: "P-001", name: "Change window respected", verdict: "skip", input: "emergency override invoked" },
       { id: "P-014", name: "Vendor allowlist", verdict: "pass", input: "vendor=Samsung ∈ allowlist" },
-      { id: "P-070", name: "E911 routing affected", verdict: "fail", input: "911 primary path mutates → forces human approval" },
+      { id: "P-070", name: "E911 routing affected", verdict: "fail", input: "911 primary path mutates → forces human approval", onFail: "approve" },
       { id: "P-071", name: "Fallback path verified", verdict: "pass", input: "microwave-link-9 healthy, latency 11ms" },
       { id: "P-080", name: "Two-person approval", verdict: "pending", input: "awaiting RF Lead + NOC Director" },
       { id: "P-055", name: "PII / subscriber data touched", verdict: "pass", input: "no subscriber identifiers" }
